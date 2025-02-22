@@ -4,7 +4,7 @@ import json
 from datetime import datetime, timedelta
 
 
-def process_hourly_data():
+def get_last_hour():
     # Obtener la fecha y hora actual
     now = datetime.now()
 
@@ -103,4 +103,4 @@ def process_hourly_data():
 
 
 if __name__ == "__main__":
-    process_hourly_data()
+    get_last_hour()
