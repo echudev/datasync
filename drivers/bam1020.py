@@ -31,9 +31,7 @@ def last_hour_bam1020():
         
         # Paso 2: Solicitar menú CSV (archivo 6)
         ser.write(b'6')
-        # Leer hasta el prompt '>'
-        menu_response = ser.read_until(b'>').decode('ascii')
-        
+
         # Paso 3: Solicitar último registro (subarchivo 4)
         ser.write(b'4')
         
@@ -64,4 +62,4 @@ def last_hour_bam1020():
             ser.close()
 
 if __name__ == "__main__":
-    last_hour_bam1020():
+    last_hour_bam1020()
