@@ -1,0 +1,16 @@
+{
+    "station": {
+        "name": "Centenario",
+        "location": "Buenos Aires",
+        "latitude": 0.0,
+        "longitude": 0.0,
+        "elevation": 0.0
+    },
+    "sensors": [
+        {
+            "name": "davisvp2",
+            "keys": [ "WindSpeed", "WindDir", "TempOut", "HumOut", "Pressure", "UV", "Rain", "SolarRad"],
+            "scan_interval": 10.0
+        }
+    ]
+}
