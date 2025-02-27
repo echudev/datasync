@@ -11,3 +11,9 @@ wheels/
 
 # Environment variables
 .env
+
+# Data files
+data
+
+# log files
+logs
