@@ -1,11 +1,22 @@
-# drivers/davis_vantage_pro2.py
-import serial
-import time
-from datetime import datetime, timedelta
+"""
+Driver for Davis Vantage Pro 2 weather station.
+
+This module provides an asynchronous interface to read real-time data using the LOOP command.
+"""
+
+import asyncio
+import serial_asyncio
+import logging
+from typing import Dict
 from array import array
+from services import Sensor  # Importamos la interfaz Sensor
+
+logger = logging.getLogger("davis_vantage_pro2")
 
 
-class DavisVantagePro2:
+class DavisVantagePro2(Sensor):
+    """Driver for Davis Vantage Pro 2 implementing the Sensor interface."""
+
     CRC_TABLE = (
         0x0,
         0x1021,
@@ -265,242 +276,133 @@ class DavisVantagePro2:
         0x1EF0,
     )
 
-    def __init__(self, port="COM4", baudrate=19200, timeout=2):
+    def __init__(self, port: str = "COM4", baudrate: int = 19200, timeout: float = 2):
+        """Initialize the Davis Vantage Pro 2 driver."""
         self.port = port
         self.baudrate = baudrate
         self.timeout = timeout
         self.serial_conn = None
+        self._transport = None
+        self._protocol = None
 
-    def connect(self):
+    async def connect(self) -> None:
+        """Establish an asynchronous serial connection."""
         try:
-            self.serial_conn = serial.Serial(
-                port=self.port,
+            (
+                self._transport,
+                self._protocol,
+            ) = await serial_asyncio.open_serial_connection(
+                url=self.port,
                 baudrate=self.baudrate,
-                bytesize=serial.EIGHTBITS,
-                parity=serial.PARITY_NONE,
-                stopbits=serial.STOPBITS_ONE,
+                bytesize=serial_asyncio.serial.EIGHTBITS,
+                parity=serial_asyncio.serial.PARITY_NONE,
+                stopbits=serial_asyncio.serial.STOPBITS_ONE,
                 timeout=self.timeout,
             )
-            print(f"Conectado al puerto {self.port}")
-            self.wake_up()
-        except serial.SerialException as e:
-            print(f"Error al conectar: {e}")
+            logger.info(f"Connected to {self.port}")
+            await self.wake_up()
+        except Exception as e:
+            logger.error(f"Error connecting to Davis Vantage Pro 2: {e}")
             raise
 
-    def get_station_time(self):
-        """Obtiene la hora actual de la estación."""
-        self.serial_conn.flushInput()
-        print("Enviando GETTIME")
-        self.serial_conn.write(b"GETTIME\n")
-        time.sleep(3)  # Más tiempo para la respuesta
-        response = self.serial_conn.read(8)
-        print(f"Respuesta cruda a GETTIME: {response.hex()}")
-        if len(response) == 8:
-            if self.verify_crc(response):
-                seconds = response[0]
-                minutes = response[1]
-                hours = response[2]
-                day = response[3]
-                month = response[4]
-                year = 1900 + response[5]
-                time_str = f"{year}-{month:02d}-{day:02d} {hours:02d}:{minutes:02d}:{seconds:02d}"
-                print(f"Hora de la estación: {time_str}")
-                return datetime(year, month, day, hours, minutes, seconds)
-            else:
-                print("CRC inválido para GETTIME")
-        else:
-            print(
-                f"Respuesta de longitud incorrecta: {len(response)} bytes - {response.hex()}"
-            )
-        return None
-
-    def get_last_hour(self):
-        """Obtiene el último registro horario del datalogger usando DMPAFT."""
-        self.serial_conn.flushInput()
-
-        # Intentar obtener la hora de la estación
-        station_time = self.get_station_time()
-        if station_time:
-            timestamp_dt = station_time - timedelta(hours=2)
-        else:
-            print("Usando hora local como respaldo")
-            timestamp_dt = datetime.now() - timedelta(
-                hours=24
-            )  # Hace 24 horas como fallback
-
-        # Enviar comando DMPAFT
-        print("Enviando DMPAFT")
-        self.serial_conn.write(b"DMPAFT\n")
-        time.sleep(2)
-        response = self.serial_conn.read(self.serial_conn.in_waiting or 10)
-        print(f"Respuesta después de DMPAFT: {response}")
-        if b"\x06" not in response:
-            print("No se recibió ACK después de DMPAFT")
-            return None
-
-        # Enviar timestamp
-        timestamp = timestamp_dt.strftime("%m%d%y%H%M")
-        print(f"Enviando timestamp: {timestamp}")
-        timestamp_bytes = timestamp.encode()
-        crc = self.calculate_crc(timestamp_bytes)
-        crc_bytes = crc.to_bytes(2, byteorder="big")
-        self.serial_conn.write(timestamp_bytes + crc_bytes)
-        time.sleep(3)
-        response = self.serial_conn.read(self.serial_conn.in_waiting or 10)
-        print(f"Respuesta después de timestamp: {response}")
-        if b"\x06" not in response:
-            print("No se recibió ACK después del timestamp")
-            return None
-
-        # Leer encabezado (6 bytes)
-        header = b""
-        while len(header) < 6:
-            chunk = self.serial_conn.read(6 - len(header))
-            header += chunk
-            print(f"Bytes de encabezado leídos: {len(chunk)}, total: {len(header)}")
-
-        if len(header) != 6 or not self.verify_crc(header):
-            print(f"Encabezado inválido: {len(header)} bytes - {header.hex()}")
-            self.serial_conn.write(b"\x15")  # NAK
-            return None
-        self.serial_conn.write(b"\x06")  # ACK
-
-        num_pages = int.from_bytes(header[0:2], byteorder="little")
-        print(f"Número de páginas: {num_pages}")
-        if num_pages == 0:
-            print("No hay datos nuevos después del timestamp")
-            return None
-
-        # Leer páginas y tomar el último registro
-        last_record = None
-        for i in range(num_pages):
-            print(f"Intentando leer página {i + 1}")
-            page_data = b""
-            while len(page_data) < 269:
-                chunk = self.serial_conn.read(269 - len(page_data))
-                page_data += chunk
-                print(f"Bytes leídos: {len(chunk)}, total: {len(page_data)}")
-
-            if len(page_data) != 269 or not self.verify_crc(page_data):
-                print(
-                    f"Página {i + 1} inválida: {len(page_data)} bytes - {page_data.hex()}"
-                )
-                self.serial_conn.write(b"\x15")  # NAK
-                continue
-
-            print(f"Página {i + 1} válida")
-            self.serial_conn.write(b"\x06")  # ACK
-            records = [page_data[j : j + 52] for j in range(5, 5 + 52 * 5, 52)]
-            for record in records:
-                if int.from_bytes(record[0:2], byteorder="little") != 0xFFFF:
-                    last_record = record
-
-        if last_record:
-            return self._parse_archive_record(last_record)
-        print("No se obtuvo un registro válido")
-        return None
-
-    def wake_up(self):
-        self.serial_conn.write(b"\n")
-        time.sleep(2)
-        response = self.serial_conn.read(2)
+    async def wake_up(self) -> None:
+        """Wake up the weather station."""
+        self._transport.write(b"\n")
+        await asyncio.sleep(2)
+        response = await self._read(2)
         if response == b"\n\r":
-            print("Estación despierta")
+            logger.info("Station is awake")
         else:
-            raise Exception("No se pudo despertar la estación")
+            raise Exception(f"Failed to wake up station, response: {response!r}")
 
-    def calculate_crc(self, data):
+    async def read(self) -> Dict[str, float]:
+        """Read real-time data from the station using LOOP command."""
+        try:
+            if not self._transport:
+                await self.connect()
+
+            # Limpiar buffer y enviar comando LOOP
+            self._transport.serial.flush()
+            self._transport.write(b"LOOP 1\n")
+            await asyncio.sleep(1)
+
+            # Leer ACK
+            ack = await self._read(1)
+            if ack != b"\x06":
+                logger.warning(f"Expected ACK (\x06), got: {ack!r}")
+                return {}
+
+            # Leer paquete completo (99 bytes)
+            packet = await self._read(99)
+            if len(packet) != 99:
+                logger.warning(f"Incomplete packet: {len(packet)} bytes")
+                return {}
+
+            # Verificar CRC
+            if not self.verify_crc(packet):
+                logger.warning("CRC check failed")
+                return {}
+
+            # Parsear datos
+            data = self._parse_loop_packet(packet)
+            logger.debug(f"Data read: {data}")
+            return data
+
+        except Exception as e:
+            logger.error(f"Error reading data: {e}")
+            return {}
+
+    async def _read(self, size: int) -> bytes:
+        """Helper to read a specific number of bytes asynchronously."""
+        data = b""
+        while len(data) < size:
+            chunk = await asyncio.get_event_loop().run_in_executor(
+                None, self._transport.read, size - len(data)
+            )
+            if not chunk:
+                break
+            data += chunk
+        return data
+
+    def calculate_crc(self, data: bytes) -> int:
+        """Calculate CRC for the given data."""
         crc = 0
         for byte in array("B", data):
             crc = self.CRC_TABLE[(crc >> 8) ^ byte] ^ ((crc & 0xFF) << 8)
         return crc
 
-    def verify_crc(self, data):
+    def verify_crc(self, data: bytes) -> bool:
+        """Verify the CRC of the data."""
         crc = self.calculate_crc(data)
-        print(f"CRC calculado sobre {len(data)} bytes: {crc} (hex: {hex(crc)})")
         return crc == 0
 
-    def get_loop_data(self, interval_seconds=60, duration_seconds=None):
-        start_time = time.time()
-
-        while duration_seconds is None or (time.time() - start_time) < duration_seconds:
-            self.serial_conn.flushInput()
-            command = b"LOOP 1\n"
-            print(f"Enviando: {command}")
-            self.serial_conn.write(command)
-            time.sleep(1)
-
-            ack = self.serial_conn.read(1)
-            if ack != b"\x06":
-                print(f"Esperaba ACK (\x06), recibido: {ack}")
-                time.sleep(interval_seconds)
-                continue
-
-            packet = b""
-            while len(packet) < 99:
-                chunk = self.serial_conn.read(99 - len(packet))
-                packet += chunk
-                print(f"Bytes leídos: {len(chunk)}, total: {len(packet)}")
-
-            if len(packet) != 99:
-                print(f"Paquete incompleto: {len(packet)} bytes - {packet}")
-                time.sleep(interval_seconds)
-                continue
-
-            print(f"Paquete recibido: {packet.hex()}")
-            if not self.verify_crc(packet):
-                print("Error de CRC: el paquete no es válido")
-                time.sleep(interval_seconds)
-                continue
-
-            data = self._parse_loop_packet(packet)
-            yield data
-            time.sleep(
-                max(0, interval_seconds - (time.time() - start_time) % interval_seconds)
-            )
-
-    def _parse_loop_packet(self, packet):
-        data = {
-            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "barometer": int.from_bytes(packet[7:9], byteorder="little") / 1000,
-            "temp_in": int.from_bytes(packet[9:11], byteorder="little") / 10,
-            "temp_out": int.from_bytes(packet[12:14], byteorder="little") / 10,
-            "wind_speed": packet[14],
-            "wind_dir": int.from_bytes(packet[16:18], byteorder="little"),
-            "humidity_out": packet[33],
-            "rain_rate": int.from_bytes(packet[41:43], byteorder="little") / 100,
+    def _parse_loop_packet(self, packet: bytes) -> Dict[str, float]:
+        """Parse a LOOP packet into a dictionary."""
+        return {
+            "Temperature": int.from_bytes(packet[12:14], byteorder="little") / 10,  # °F
+            "Humidity": packet[33],  # %
+            "Pressure": int.from_bytes(packet[7:9], byteorder="little") / 1000,  # hPa
+            "WindSpeed": packet[14],  # mph
+            "WindDirection": int.from_bytes(
+                packet[16:18], byteorder="little"
+            ),  # degrees
+            "RainRate": int.from_bytes(packet[41:43], byteorder="little") / 100,  # in/h
         }
-        return data
 
-    def _parse_archive_record(self, record):
-        """Parsea un registro archivado de 52 bytes."""
-        date_stamp = int.from_bytes(record[0:2], byteorder="little")
-        time_stamp = int.from_bytes(record[2:4], byteorder="little")
-        day = date_stamp & 0x1F
-        month = (date_stamp >> 5) & 0x0F
-        year = 2000 + (date_stamp >> 9)
-        hour = time_stamp // 100
-        minute = time_stamp % 100
-        data = {
-            "timestamp": f"{year}-{month:02d}-{day:02d} {hour:02d}:{minute:02d}",
-            "temp_out": int.from_bytes(record[4:6], byteorder="little") / 10,  # °F
-            "wind_avg": record[14],  # mph
-            "wind_dir": record[16],  # dirección promedio (0-15)
-            "humidity_out": record[18],  # %
-            "rain_total": int.from_bytes(record[20:22], byteorder="little") / 100,  # in
-            "barometer": int.from_bytes(record[28:30], byteorder="little")
-            / 1000,  # hPa
-        }
-        return data
+    async def close(self) -> None:
+        """Close the serial connection."""
+        if self._transport:
+            self._transport.close()
+            await asyncio.sleep(0.1)  # Dar tiempo para cerrar
+            self._transport = None
+            self._protocol = None
+            logger.info("Connection closed")
 
-    def close(self):
-        if self.serial_conn and self.serial_conn.is_open:
-            self.serial_conn.close()
-            print("Conexión cerrada")
-
-    def __enter__(self):
-        self.connect()
+    async def __aenter__(self):
+        """Async context manager entry."""
+        await self.connect()
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        self.close()
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """Async context manager exit."""
+        await self.close()
