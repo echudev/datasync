@@ -13,15 +13,8 @@ import sys
 from pathlib import Path
 from typing import List, TypedDict
 
-from services import (
-    DataCollector,
-    SensorConfig,
-    CollectorState,
-)
-
-from drivers import (
-    DavisVantagePro2,
-)
+from services import DataCollector, SensorConfig, CollectorState, Sensor
+from drivers import DavisVantagePro2
 
 # Configure logging
 logging.basicConfig(
@@ -32,7 +25,6 @@ logging.basicConfig(
 logger = logging.getLogger("data_collector")
 
 
-# Definir tipo para datos de la estación (opcional, para tipado estricto)
 class StationConfig(TypedDict):
     name: str
     location: str
@@ -63,7 +55,6 @@ async def main() -> None:
     with open("config.json") as f:
         config = json.load(f)
 
-    # Extraer datos de la estación
     station_config: StationConfig = config["station"]
     logger.info(
         f"Station: {station_config['name']} at {station_config['location']} "
@@ -71,16 +62,15 @@ async def main() -> None:
         f"Elev: {station_config['elevation']} m)"
     )
 
-    # Extraer configuración de sensores
     sensors_config: List[SensorConfig] = config["sensors"]
 
     # Mapear nombres de sensores a sus clases
     sensor_classes = {
-        "davisvp2": DavisVantagePro2,
+        "davisvp2": lambda: DavisVantagePro2(port="COM3"),
     }
 
     # Crear instancias de sensores
-    sensors = [sensor_classes[cfg["name"]]() for cfg in sensors_config]
+    sensors: List[Sensor] = [sensor_classes[cfg["name"]]() for cfg in sensors_config]
 
     # Configurar columnas
     columns = ["timestamp"]
@@ -91,7 +81,6 @@ async def main() -> None:
     async with DataCollector(output_path=Path("data"), logger=logger) as collector:
         collector.set_columns(columns)
 
-        # Crear tareas
         loop = asyncio.get_running_loop()
         for sig in (signal.SIGINT, signal.SIGTERM):
             loop.add_signal_handler(sig, lambda: signal_handler(collector, loop))
