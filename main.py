@@ -5,22 +5,30 @@ Main entry point for the data collection system, coordinating sensor data
 collection and graceful shutdown.
 """
 
+import os
 import asyncio
 import json
 import logging
 import signal
 import sys
+import platform
 from pathlib import Path
 from typing import List, TypedDict
 
 from services import DataCollector, SensorConfig, CollectorState, Sensor
 from drivers import DavisVantagePro2
 
+
+# Crear la carpeta 'logs' si no existe
+log_dir = "logs"
+if not os.path.exists(log_dir):
+    os.makedirs(log_dir)
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    handlers=[logging.StreamHandler(), logging.FileHandler("data_collection.log")],
+    handlers=[logging.StreamHandler(), logging.FileHandler("logs/data_collection.log")],
 )
 logger = logging.getLogger("data_collector")
 
@@ -82,8 +90,23 @@ async def main() -> None:
         collector.set_columns(columns)
 
         loop = asyncio.get_running_loop()
-        for sig in (signal.SIGINT, signal.SIGTERM):
-            loop.add_signal_handler(sig, lambda: signal_handler(collector, loop))
+
+        # Manejo de signals dependiendo el sistema operativo
+        if platform.system() != "Windows":
+            # Para sistemas basados en Unix uso: add_signal_handler
+            for sig in (signal.SIGINT, signal.SIGTERM):
+                loop.add_signal_handler(sig, lambda: signal_handler(collector, loop))
+        else:
+            # Alternativa para Windows: creo una tarea que escuche interrupciones del teclado
+            async def windows_signal_handler():
+                try:
+                    # Mantengo la tarea viva hasta que el colector se detenga
+                    while collector.state != CollectorState.STOPPING:
+                        await asyncio.sleep(0.1)
+                except asyncio.CancelledError:
+                    signal_handler(collector, loop)
+
+            asyncio.create_task(windows_signal_handler())
 
         collection_tasks = [
             asyncio.create_task(collector.collect_data(sensor, config))
