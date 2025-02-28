@@ -5,18 +5,17 @@ This module provides an asynchronous interface to read real-time data using the 
 """
 
 import asyncio
-import serial_asyncio
 import logging
+import serial
+import time
 from typing import Dict
 from array import array
-from services import Sensor  # Importamos la interfaz Sensor
+from services import Sensor
 
 logger = logging.getLogger("davis_vantage_pro2")
 
 
 class DavisVantagePro2(Sensor):
-    """Driver for Davis Vantage Pro 2 implementing the Sensor interface."""
-
     CRC_TABLE = (
         0x0,
         0x1021,
@@ -277,39 +276,33 @@ class DavisVantagePro2(Sensor):
     )
 
     def __init__(self, port: str = "COM4", baudrate: int = 19200, timeout: float = 2):
-        """Initialize the Davis Vantage Pro 2 driver."""
         self.port = port
         self.baudrate = baudrate
         self.timeout = timeout
         self.serial_conn = None
-        self._transport = None
-        self._protocol = None
 
-    async def connect(self) -> None:
-        """Establish an asynchronous serial connection."""
+    def connect(self) -> None:
+        """Establish a synchronous serial connection."""
         try:
-            (
-                self._transport,
-                self._protocol,
-            ) = await serial_asyncio.open_serial_connection(
-                url=self.port,
+            self.serial_conn = serial.Serial(
+                port=self.port,
                 baudrate=self.baudrate,
-                bytesize=serial_asyncio.serial.EIGHTBITS,
-                parity=serial_asyncio.serial.PARITY_NONE,
-                stopbits=serial_asyncio.serial.STOPBITS_ONE,
+                bytesize=serial.EIGHTBITS,
+                parity=serial.PARITY_NONE,
+                stopbits=serial.STOPBITS_ONE,
                 timeout=self.timeout,
             )
             logger.info(f"Connected to {self.port}")
-            await self.wake_up()
-        except Exception as e:
+            self.wake_up()
+        except serial.SerialException as e:
             logger.error(f"Error connecting to Davis Vantage Pro 2: {e}")
             raise
 
-    async def wake_up(self) -> None:
-        """Wake up the weather station."""
-        self._transport.write(b"\n")
-        await asyncio.sleep(2)
-        response = await self._read(2)
+    def wake_up(self) -> None:
+        """Wake up the weather station synchronously."""
+        self.serial_conn.write(b"\n")
+        time.sleep(2)
+        response = self.serial_conn.read(2)
         if response == b"\n\r":
             logger.info("Station is awake")
         else:
@@ -318,91 +311,68 @@ class DavisVantagePro2(Sensor):
     async def read(self) -> Dict[str, float]:
         """Read real-time data from the station using LOOP command."""
         try:
-            if not self._transport:
-                await self.connect()
+            if not self.serial_conn:
+                await asyncio.get_event_loop().run_in_executor(None, self.connect)
 
-            # Limpiar buffer y enviar comando LOOP
-            self._transport.serial.flush()
-            self._transport.write(b"LOOP 1\n")
-            await asyncio.sleep(1)
-
-            # Leer ACK
-            ack = await self._read(1)
-            if ack != b"\x06":
-                logger.warning(f"Expected ACK (\x06), got: {ack!r}")
-                return {}
-
-            # Leer paquete completo (99 bytes)
-            packet = await self._read(99)
-            if len(packet) != 99:
-                logger.warning(f"Incomplete packet: {len(packet)} bytes")
-                return {}
-
-            # Verificar CRC
-            if not self.verify_crc(packet):
-                logger.warning("CRC check failed")
-                return {}
-
-            # Parsear datos
-            data = self._parse_loop_packet(packet)
-            logger.debug(f"Data read: {data}")
+            loop = asyncio.get_event_loop()
+            data = await loop.run_in_executor(None, self._read_sync)
             return data
 
         except Exception as e:
             logger.error(f"Error reading data: {e}")
             return {}
 
-    async def _read(self, size: int) -> bytes:
-        """Helper to read a specific number of bytes asynchronously."""
-        data = b""
-        while len(data) < size:
-            chunk = await asyncio.get_event_loop().run_in_executor(
-                None, self._transport.read, size - len(data)
-            )
-            if not chunk:
-                break
-            data += chunk
+    def _read_sync(self) -> Dict[str, float]:
+        """Synchronous read implementation."""
+        self.serial_conn.flush()
+        self.serial_conn.write(b"LOOP 1\n")
+        time.sleep(1)
+
+        ack = self.serial_conn.read(1)
+        if ack != b"\x06":
+            logger.warning(f"Expected ACK (\x06), got: {ack!r}")
+            return {}
+
+        packet = self.serial_conn.read(99)
+        if len(packet) != 99:
+            logger.warning(f"Incomplete packet: {len(packet)} bytes")
+            return {}
+
+        if not self.verify_crc(packet):
+            logger.warning("CRC check failed")
+            return {}
+
+        data = self._parse_loop_packet(packet)
+        logger.debug(f"Data read: {data}")
         return data
 
     def calculate_crc(self, data: bytes) -> int:
-        """Calculate CRC for the given data."""
         crc = 0
         for byte in array("B", data):
             crc = self.CRC_TABLE[(crc >> 8) ^ byte] ^ ((crc & 0xFF) << 8)
         return crc
 
     def verify_crc(self, data: bytes) -> bool:
-        """Verify the CRC of the data."""
-        crc = self.calculate_crc(data)
-        return crc == 0
+        return self.calculate_crc(data) == 0
 
     def _parse_loop_packet(self, packet: bytes) -> Dict[str, float]:
-        """Parse a LOOP packet into a dictionary."""
         return {
-            "Temperature": int.from_bytes(packet[12:14], byteorder="little") / 10,  # °F
-            "Humidity": packet[33],  # %
-            "Pressure": int.from_bytes(packet[7:9], byteorder="little") / 1000,  # hPa
-            "WindSpeed": packet[14],  # mph
-            "WindDirection": int.from_bytes(
-                packet[16:18], byteorder="little"
-            ),  # degrees
-            "RainRate": int.from_bytes(packet[41:43], byteorder="little") / 100,  # in/h
+            "Temperature": int.from_bytes(packet[12:14], byteorder="little") / 10,
+            "Humidity": packet[33],
+            "Pressure": int.from_bytes(packet[7:9], byteorder="little") / 1000,
+            "WindSpeed": packet[14],
+            "WindDirection": int.from_bytes(packet[16:18], byteorder="little"),
+            "RainRate": int.from_bytes(packet[41:43], byteorder="little") / 100,
         }
 
-    async def close(self) -> None:
-        """Close the serial connection."""
-        if self._transport:
-            self._transport.close()
-            await asyncio.sleep(0.1)  # Dar tiempo para cerrar
-            self._transport = None
-            self._protocol = None
+    def close(self) -> None:
+        if self.serial_conn and self.serial_conn.is_open:
+            self.serial_conn.close()
             logger.info("Connection closed")
 
     async def __aenter__(self):
-        """Async context manager entry."""
-        await self.connect()
+        await asyncio.get_event_loop().run_in_executor(None, self.connect)
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        """Async context manager exit."""
-        await self.close()
+        await asyncio.get_event_loop().run_in_executor(None, self.close)
