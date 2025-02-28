@@ -74,7 +74,7 @@ async def main() -> None:
 
     # Mapear nombres de sensores a sus clases
     sensor_classes = {
-        "davisvp2": lambda: DavisVantagePro2(port="COM3"),
+        "davisvp2": lambda: DavisVantagePro2(port="COM4"),
     }
 
     # Crear instancias de sensores
