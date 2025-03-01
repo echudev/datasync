@@ -122,7 +122,7 @@ class DataCollector:
     async def process_and_save_data(
         self, output_interval: float = 60.0, batch_size: int = 10
     ) -> None:
-        """Process collected data and save in batches."""
+        """Process collected data and save in batches, forcing save at hour boundaries."""
         self.logger.info("Starting data processing task")
         try:
             while self.state == CollectorState.RUNNING:
@@ -130,7 +130,13 @@ class DataCollector:
 
                 now = datetime.now()
                 process_time = now.replace(second=0, microsecond=0)
-                process_time = process_time.replace(minute=process_time.minute - 1)
+                # Retroceder un minuto, manejando el cambio de hora
+                if process_time.minute == 0:
+                    process_time = process_time.replace(
+                        hour=process_time.hour - 1, minute=59
+                    )
+                else:
+                    process_time = process_time.replace(minute=process_time.minute - 1)
                 timestamp_key = process_time.strftime("%Y-%m-%d %H:%M")
 
                 async with self.data_lock:
@@ -145,12 +151,24 @@ class DataCollector:
                         )
                         del self.data_buffer[timestamp_key]
 
-                if len(self.data_to_save) >= batch_size:
+                # Forzar guardado al final de cada hora (minuto 59)
+                if process_time.minute == 59 and self.data_to_save:
+                    self.logger.debug(f"Forcing save at hour boundary: {timestamp_key}")
                     await self._save_batch_data(self.data_to_save)
                     self.data_to_save.clear()
+                elif len(self.data_to_save) >= batch_size:
+                    self.logger.debug(
+                        f"Saving batch of {len(self.data_to_save)} records"
+                    )
+                    await self._save_batch_data(self.data_to_save)
+                    self.data_to_save.clear()
+
         except Exception as e:
             self.logger.error(f"Error in data processing: {e}")
         finally:
+            if self.data_to_save:
+                self.logger.info(f"Saving remaining {len(self.data_to_save)} records")
+                await self._save_batch_data(self.data_to_save)
             self.logger.info("Stopped data processing task")
 
     @retry(stop=stop_after_attempt(3), wait=wait_fixed(2))
