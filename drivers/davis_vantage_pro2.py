@@ -1,15 +1,10 @@
-"""
-Driver for Davis Vantage Pro 2 weather station.
-
-This module provides an asynchronous interface to read real-time data using the LOOP command.
-"""
-
 import asyncio
 import logging
 import serial
 import time
 from typing import Dict
 from array import array
+
 from services import Sensor
 
 logger = logging.getLogger("davis_vantage_pro2")
@@ -275,14 +270,13 @@ class DavisVantagePro2(Sensor):
         0x1EF0,
     )
 
-    def __init__(self, port: str = "COM4", baudrate: int = 19200, timeout: float = 2):
+    def __init__(self, port: str = "COM4", baudrate: int = 19200, timeout: float = 5):
         self.port = port
         self.baudrate = baudrate
         self.timeout = timeout
         self.serial_conn = None
 
     def connect(self) -> None:
-        """Establish a synchronous serial connection."""
         try:
             self.serial_conn = serial.Serial(
                 port=self.port,
@@ -299,41 +293,40 @@ class DavisVantagePro2(Sensor):
             raise
 
     def wake_up(self) -> None:
-        """Wake up the weather station synchronously."""
+        logger.debug("Sending wake-up command")
         self.serial_conn.write(b"\n")
         time.sleep(2)
         response = self.serial_conn.read(2)
+        logger.debug(f"Wake-up response: {response!r}")
         if response == b"\n\r":
             logger.info("Station is awake")
         else:
             raise Exception(f"Failed to wake up station, response: {response!r}")
 
     async def read(self) -> Dict[str, float]:
-        """Read real-time data from the station using LOOP command."""
         try:
-            if not self.serial_conn:
+            if not self.serial_conn or not self.serial_conn.is_open:
                 await asyncio.get_event_loop().run_in_executor(None, self.connect)
-
             loop = asyncio.get_event_loop()
             data = await loop.run_in_executor(None, self._read_sync)
             return data
-
         except Exception as e:
             logger.error(f"Error reading data: {e}")
             return {}
 
     def _read_sync(self) -> Dict[str, float]:
-        """Synchronous read implementation."""
         self.serial_conn.flush()
+        logger.debug("Sending LOOP 1 command")
         self.serial_conn.write(b"LOOP 1\n")
-        time.sleep(1)
-
+        time.sleep(1)  # Tiempo para respuesta
         ack = self.serial_conn.read(1)
+        logger.debug(f"ACK received: {ack!r}")
         if ack != b"\x06":
             logger.warning(f"Expected ACK (\x06), got: {ack!r}")
             return {}
 
         packet = self.serial_conn.read(99)
+        logger.debug(f"Packet received: {len(packet)} bytes")
         if len(packet) != 99:
             logger.warning(f"Incomplete packet: {len(packet)} bytes")
             return {}
@@ -343,7 +336,7 @@ class DavisVantagePro2(Sensor):
             return {}
 
         data = self._parse_loop_packet(packet)
-        logger.debug(f"Data read: {data}")
+        logger.debug(f"Data parsed: {data}")
         return data
 
     def calculate_crc(self, data: bytes) -> int:
