@@ -130,11 +130,16 @@ class DataCollector:
 
                 now = datetime.now()
                 process_time = now.replace(second=0, microsecond=0)
-                # Retroceder un minuto, manejando el cambio de hora
+                # Retroceder un minuto, manejando el cambio de hora y día
                 if process_time.minute == 0:
-                    process_time = process_time.replace(
-                        hour=process_time.hour - 1, minute=59
-                    )
+                    if process_time.hour == 0:
+                        process_time = process_time.replace(
+                            day=process_time.day - 1, hour=23, minute=59
+                        )
+                    else:
+                        process_time = process_time.replace(
+                            hour=process_time.hour - 1, minute=59
+                        )
                 else:
                     process_time = process_time.replace(minute=process_time.minute - 1)
                 timestamp_key = process_time.strftime("%Y-%m-%d %H:%M")
@@ -142,8 +147,11 @@ class DataCollector:
                 async with self.data_lock:
                     if timestamp_key in self.data_buffer:
                         buffer_entry = self.data_buffer[timestamp_key]
+                        # Redondear promedios: 1 decimal para todo menos RainRate (2 decimales)
                         averages = {
-                            k: v / buffer_entry["count"]
+                            k: round(v / buffer_entry["count"], 1)
+                            if k != "RainRate"
+                            else round(v / buffer_entry["count"], 2)
                             for k, v in buffer_entry["data"].items()
                         }
                         self.data_to_save.append(
@@ -151,7 +159,6 @@ class DataCollector:
                         )
                         del self.data_buffer[timestamp_key]
 
-                # Forzar guardado al final de cada hora (minuto 59)
                 if process_time.minute == 59 and self.data_to_save:
                     self.logger.debug(f"Forcing save at hour boundary: {timestamp_key}")
                     await self._save_batch_data(self.data_to_save)
