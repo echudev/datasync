@@ -26,7 +26,7 @@ if not os.path.exists(log_dir):
 
 # Configure logging
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     handlers=[logging.StreamHandler(), logging.FileHandler("logs/data_collection.log")],
 )
