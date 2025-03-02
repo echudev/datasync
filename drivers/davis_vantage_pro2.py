@@ -293,15 +293,12 @@ class DavisVantagePro2(Sensor):
             raise
 
     def wake_up(self) -> None:
-        logger.debug("Sending wake-up command")
         self.serial_conn.write(b"\n")
         time.sleep(2)
         response = self.serial_conn.read(2)
-        logger.debug(f"Wake-up response: {response!r}")
-        if response == b"\n\r":
-            logger.info("Station is awake")
-        else:
+        if response != b"\n\r":
             raise Exception(f"Failed to wake up station, response: {response!r}")
+        logger.info("Station is awake")
 
     async def read(self) -> Dict[str, float]:
         try:
@@ -309,36 +306,32 @@ class DavisVantagePro2(Sensor):
                 await asyncio.get_event_loop().run_in_executor(None, self.connect)
             loop = asyncio.get_event_loop()
             data = await loop.run_in_executor(None, self._read_sync)
-            logger.debug(f"Raw data from read: {data}")
             return data
         except Exception as e:
             logger.error(f"Error reading data: {e}")
             return {}
 
     def _read_sync(self) -> Dict[str, float]:
-        self.serial_conn.flush()
-        logger.debug("Sending LOOP 1 command")
-        self.serial_conn.write(b"LOOP 1\n")
-        time.sleep(1)
-        ack = self.serial_conn.read(1)
-        logger.debug(f"ACK received: {ack!r}")
-        if ack != b"\x06":
-            logger.warning(f"Expected ACK (\x06), got: {ack!r}")
-            return {}
+        try:
+            self.serial_conn.flush()
+            self.serial_conn.write(b"LOOP 1\n")
+            time.sleep(1)  # Ajusta si es necesario
+            ack = self.serial_conn.read(1)
+            if ack != b"\x06":
+                return {}
 
-        packet = self.serial_conn.read(99)
-        logger.debug(f"Packet received: {len(packet)} bytes, raw: {packet.hex()}")
-        if len(packet) != 99:
-            logger.warning(f"Incomplete packet: {len(packet)} bytes")
-            return {}
+            packet = self.serial_conn.read(99)
+            if len(packet) != 99:
+                return {}
 
-        if not self.verify_crc(packet):
-            logger.warning("CRC check failed")
-            return {}
+            if not self.verify_crc(packet):
+                return {}
 
-        data = self._parse_loop_packet(packet)
-        logger.debug(f"Parsed data: {data}")
-        return data
+            data = self._parse_loop_packet(packet)
+            return data
+        except Exception as e:
+            logger.error(f"Error in synchronous read: {e}")
+            return {}
 
     def calculate_crc(self, data: bytes) -> int:
         crc = 0
@@ -350,24 +343,67 @@ class DavisVantagePro2(Sensor):
         return self.calculate_crc(data) == 0
 
     def _parse_loop_packet(self, packet: bytes) -> Dict[str, float]:
-        """Parse a LOOP packet into a dictionary with corrected units."""
-        temp_f = int.from_bytes(packet[12:14], byteorder="little") / 10  # °F
-        temp_c = (temp_f - 32) * 5 / 9  # Convertir a °C
-        pressure_mb = int.from_bytes(packet[7:9], byteorder="little") / 10  # hPa
-        return {
-            "Temperature": temp_c,
-            "Humidity": float(packet[33]),  # % (0-100)
-            "Pressure": pressure_mb,  # hPa
-            "WindSpeed": float(packet[14]),  # mph
-            "WindDirection": float(
-                int.from_bytes(packet[16:18], byteorder="little")
-            ),  # grados
-            "RainRate": int.from_bytes(packet[41:43], byteorder="little") / 100,  # in/h
-            "UV": float(packet[44]) / 10,  # Índice UV
-            "SolarRadiation": float(
-                int.from_bytes(packet[45:47], byteorder="little")
-            ),  # W/m²
-        }
+        try:
+            # Barometer (Bytes 7-8): inHg * 1000, little-endian, convertir a hPa
+            pressure_raw = int.from_bytes(packet[7:9], byteorder="little", signed=False)
+            pressure_inhg = pressure_raw / 1000  # inHg
+            pressure_hpa = pressure_inhg * 33.8639  # Convertir a hPa
+
+            # Outside Temperature (Bytes 12-13): décimas de °F, little-endian, convertir a °C
+            temp_f = (
+                int.from_bytes(packet[12:14], byteorder="little", signed=False) / 10
+            )  # °F
+            temp_c = (temp_f - 32) * 5 / 9  # Convertir a °C
+
+            # Wind Speed (Byte 14): mph
+            wind_speed = float(packet[14]) if packet[14] > 0 else 0.0
+
+            # Wind Direction (Bytes 16-17): grados (0-359), little-endian
+            wind_dir = int.from_bytes(packet[16:18], byteorder="little", signed=False)
+            wind_direction = (
+                float(wind_dir) if 0 <= wind_dir < 360 else 112.0
+            )  # ESE por defecto
+
+            # Outside Humidity (Byte 33): % (0-100)
+            humidity = float(packet[33]) if 0 <= packet[33] <= 100 else 0.0
+
+            # Rain Rate (Bytes 41-42): pulsos por hora * 100, little-endian, convertir a in/h
+            rain_rate = (
+                int.from_bytes(packet[41:43], byteorder="little", signed=False) / 100
+            )  # in/h
+
+            # UV Index (Byte 44): décimas de unidades, 0.0 sin sensor
+            uv = 0.0  # Sin sensor UV, forzar a 0.0
+
+            # Solar Radiation (Bytes 45-46): W/m², 0.0 sin sensor
+            solar_radiation = 0.0  # Sin sensor solar, forzar a 0.0
+
+            return {
+                "Temperature": round(temp_c, 2),  # °C, redondeado a 2 decimales
+                "Humidity": round(humidity, 2),  # %, redondeado a 2 decimales
+                "Pressure": round(pressure_hpa, 2),  # hPa, redondeado a 2 decimales
+                "WindSpeed": round(wind_speed, 2),  # mph, redondeado a 2 decimales
+                "WindDirection": round(
+                    wind_direction, 2
+                ),  # grados, redondeado a 2 decimales
+                "RainRate": round(rain_rate, 2),  # in/h, redondeado a 2 decimales
+                "UV": round(uv, 2),  # Índice UV, redondeado a 2 decimales
+                "SolarRadiation": round(
+                    solar_radiation, 2
+                ),  # W/m², redondeado a 2 decimales
+            }
+        except Exception as e:
+            logger.error(f"Error parsing packet: {e}")
+            return {
+                "Temperature": 0.0,
+                "Humidity": 0.0,
+                "Pressure": 0.0,
+                "WindSpeed": 0.0,
+                "WindDirection": 0.0,
+                "RainRate": 0.0,
+                "UV": 0.0,
+                "SolarRadiation": 0.0,
+            }
 
     def close(self) -> None:
         if self.serial_conn and self.serial_conn.is_open:
