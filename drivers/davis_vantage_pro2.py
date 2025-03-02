@@ -309,6 +309,7 @@ class DavisVantagePro2(Sensor):
                 await asyncio.get_event_loop().run_in_executor(None, self.connect)
             loop = asyncio.get_event_loop()
             data = await loop.run_in_executor(None, self._read_sync)
+            logger.debug(f"Raw data from read: {data}")
             return data
         except Exception as e:
             logger.error(f"Error reading data: {e}")
@@ -318,7 +319,7 @@ class DavisVantagePro2(Sensor):
         self.serial_conn.flush()
         logger.debug("Sending LOOP 1 command")
         self.serial_conn.write(b"LOOP 1\n")
-        time.sleep(1)  # Tiempo para respuesta
+        time.sleep(1)
         ack = self.serial_conn.read(1)
         logger.debug(f"ACK received: {ack!r}")
         if ack != b"\x06":
@@ -326,7 +327,7 @@ class DavisVantagePro2(Sensor):
             return {}
 
         packet = self.serial_conn.read(99)
-        logger.debug(f"Packet received: {len(packet)} bytes")
+        logger.debug(f"Packet received: {len(packet)} bytes, raw: {packet.hex()}")
         if len(packet) != 99:
             logger.warning(f"Incomplete packet: {len(packet)} bytes")
             return {}
@@ -336,7 +337,7 @@ class DavisVantagePro2(Sensor):
             return {}
 
         data = self._parse_loop_packet(packet)
-        logger.debug(f"Data parsed: {data}")
+        logger.debug(f"Parsed data: {data}")
         return data
 
     def calculate_crc(self, data: bytes) -> int:
@@ -349,13 +350,23 @@ class DavisVantagePro2(Sensor):
         return self.calculate_crc(data) == 0
 
     def _parse_loop_packet(self, packet: bytes) -> Dict[str, float]:
+        """Parse a LOOP packet into a dictionary with corrected units."""
+        temp_f = int.from_bytes(packet[12:14], byteorder="little") / 10  # °F
+        temp_c = (temp_f - 32) * 5 / 9  # Convertir a °C
+        pressure_mb = int.from_bytes(packet[7:9], byteorder="little") / 10  # hPa
         return {
-            "Temperature": int.from_bytes(packet[12:14], byteorder="little") / 10,
-            "Humidity": packet[33],
-            "Pressure": int.from_bytes(packet[7:9], byteorder="little") / 1000,
-            "WindSpeed": packet[14],
-            "WindDirection": int.from_bytes(packet[16:18], byteorder="little"),
-            "RainRate": int.from_bytes(packet[41:43], byteorder="little") / 100,
+            "Temperature": temp_c,
+            "Humidity": float(packet[33]),  # % (0-100)
+            "Pressure": pressure_mb,  # hPa
+            "WindSpeed": float(packet[14]),  # mph
+            "WindDirection": float(
+                int.from_bytes(packet[16:18], byteorder="little")
+            ),  # grados
+            "RainRate": int.from_bytes(packet[41:43], byteorder="little") / 100,  # in/h
+            "UV": float(packet[44]) / 10,  # Índice UV
+            "SolarRadiation": float(
+                int.from_bytes(packet[45:47], byteorder="little")
+            ),  # W/m²
         }
 
     def close(self) -> None:

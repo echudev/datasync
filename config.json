@@ -9,7 +9,7 @@
     "sensors": [
         {
             "name": "davisvp2",
-            "keys": [ "WindSpeed", "WindDir", "TempOut", "HumOut", "Pressure", "UV", "Rain", "SolarRad"],
+            "keys": ["Temperature", "Humidity", "Pressure", "WindSpeed", "WindDirection", "RainRate", "UV", "SolarRadiation"],
             "scan_interval": 10.0
         }
     ]
