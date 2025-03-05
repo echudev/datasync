@@ -2,10 +2,9 @@
 Module for publishing hourly averages from a CSV file to an external endpoint.
 
 This module defines a CSVPublisher class that reads daily CSV data from the 'data' directory,
-calculates hourly averages, and sends them to a specified API endpoint every hour.
+calculates hourly averages, and sends them to a specified API endpoint once per execution.
 """
 
-import asyncio
 import logging
 import os
 import json
@@ -108,9 +107,9 @@ class CSVPublisher:
             logger.error(f"Error calculating hourly averages: {e}")
             raise
 
-    async def _send_to_endpoint(self, data: Dict[str, Any]) -> bool:
+    def _send_to_endpoint(self, data: Dict[str, Any]) -> bool:
         """
-        Send data to the external endpoint asynchronously.
+        Send data to the external endpoint synchronously.
 
         Args:
             data (Dict[str, Any]): Data to send in JSON format.
@@ -119,62 +118,52 @@ class CSVPublisher:
             bool: True if successful, False otherwise.
         """
         try:
-            response = await asyncio.to_thread(
-                requests.post,
+            response = requests.post(
                 self.endpoint_url,
                 headers=self.headers,
                 data=json.dumps(data),
             )
             response.raise_for_status()
             logger.info(
-                f"Data sent successfully to {self.endpoint_url}: {response.text}"
+                f"[{datetime.now()}] Data sent successfully to {self.endpoint_url}: {response.text}"
             )
             return True
         except requests.exceptions.RequestException as e:
-            logger.error(f"Error sending data to endpoint: {e}")
+            logger.error(f"[{datetime.now()}] Error sending data to endpoint: {e}")
             return False
 
-    async def run(self) -> None:
+    def run_once(self) -> None:
         """
-        Run the publisher to send hourly averages every hour.
+        Run the publisher to send hourly averages once per execution.
         """
-        while True:
-            try:
-                # Obtener la fecha actual
-                now = datetime.now()
-                year, month, day = (
-                    now.strftime("%Y"),
-                    now.strftime("%m"),
-                    now.strftime("%d"),
-                )
+        try:
+            # Obtener la fecha actual
+            now = datetime.now()
+            year, month, day = (
+                now.strftime("%Y"),
+                now.strftime("%m"),
+                now.strftime("%d"),
+            )
 
-                # Leer el CSV
-                df = self._read_csv(year, month, day)
+            # Leer el CSV
+            df = self._read_csv(year, month, day)
 
-                # Calcular promedios horarios
-                hourly_data = self._calculate_hourly_averages(df)
+            # Calcular promedios horarios
+            hourly_data = self._calculate_hourly_averages(df)
 
-                # Enviar a la API
-                success = await self._send_to_endpoint(hourly_data)
-                if not success:
-                    logger.warning("Failed to send data, retrying in 1 hour")
-
-                # Esperar 1 hora antes de la próxima ejecución
-                await asyncio.sleep(3600)  # 1 hora en segundos
-            except Exception as e:
-                logger.error(f"Error in publisher run loop: {e}")
-                await asyncio.sleep(
-                    3600
-                )  # Reintentar después de 1 hora en caso de error
+            # Enviar a la API
+            success = self._send_to_endpoint(hourly_data)
+            if not success:
+                logger.warning(f"[{datetime.now()}] Failed to send data")
+        except Exception as e:
+            logger.error(f"[{datetime.now()}] Error in publisher run_once: {e}")
 
 
 def main():
-    """Main function to start the publisher."""
+    """Main function to start the publisher for a single execution."""
     try:
         publisher = CSVPublisher()
-        asyncio.run(publisher.run())
-    except KeyboardInterrupt:
-        logger.info("Publisher stopped by user")
+        publisher.run_once()
     except Exception as e:
         logger.error(f"Publisher failed to start: {e}")
 
