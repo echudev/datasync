@@ -97,9 +97,7 @@ class CSVPublisher:
             data = df_hourly.to_dict(orient="records")
             for record in data:
                 for key in record:
-                    if key != "timestamp" and key != "RainRate":
-                        record[key] = round(float(record[key]), 1)
-                    elif key == "RainRate":
+                    if key != "timestamp":
                         record[key] = round(float(record[key]), 2)
 
             return {"origen": self.origen, "data": data}
