@@ -2,12 +2,13 @@
 Module for publishing hourly averages from a CSV file to an external endpoint.
 
 This module defines a CSVPublisher class that reads daily CSV data from the 'data' directory,
-calculates hourly averages, and sends them to a specified API endpoint once per execution.
+calculates hourly averages, and sends them to a specified API endpoint, controlled by a control file.
 """
 
 import logging
 import os
 import json
+import time
 from datetime import datetime
 import pandas as pd
 import requests
@@ -30,7 +31,8 @@ class CSVPublisher:
         self,
         csv_dir: str = "data",
         endpoint_url: str = None,
-        origen: str = "CENTENARIO",
+        control_file: str = "control.json",
+        check_interval: int = 5,  # Intervalo para verificar el archivo de control (segundos)
     ):
         """
         Initialize the CSVPublisher.
@@ -38,7 +40,8 @@ class CSVPublisher:
         Args:
             csv_dir (str): Directory containing the CSV files (default: "data").
             endpoint_url (str): URL of the API endpoint (loaded from env if None).
-            origen (str): Origin identifier for the data (default: "CENTENARIO").
+            control_file (str): Path to the control file (default: "control.json").
+            check_interval (int): Interval in seconds to check the control file (default: 5).
         """
         load_dotenv()
         self.csv_dir = csv_dir
@@ -47,10 +50,32 @@ class CSVPublisher:
             raise ValueError(
                 "Endpoint URL must be provided or set in .env as GOOGLE_POST_URL"
             )
-        self.origen = origen
-        self.headers = {
-            "Content-Type": "application/json",
-        }
+        self.control_file = control_file
+        self.check_interval = check_interval
+        self.last_execution = None  # Para rastrear la última ejecución
+
+    def _read_control_file(self) -> Dict[str, Any]:
+        """
+        Read the control file to determine the state of the publisher.
+
+        Returns:
+            Dict[str, Any]: Dictionary with control state (e.g., {"publisher": "RUNNING"}).
+
+        Raises:
+            FileNotFoundError: If the control file doesn't exist.
+            json.JSONDecodeError: If the control file is not valid JSON.
+        """
+        try:
+            with open(self.control_file, "r") as f:
+                return json.load(f)
+        except FileNotFoundError:
+            logger.error(
+                f"Control file {self.control_file} not found. Defaulting to STOPPED."
+            )
+            return {"publisher": "STOPPED"}
+        except json.JSONDecodeError as e:
+            logger.error(f"Error decoding control file {self.control_file}: {e}")
+            return {"publisher": "STOPPED"}
 
     def _read_csv(self, year: str, month: str, day: str) -> pd.DataFrame:
         """
@@ -97,10 +122,15 @@ class CSVPublisher:
             data = df_hourly.to_dict(orient="records")
             for record in data:
                 for key in record:
-                    if key != "timestamp":
+                    if key != "timestamp" and key != "RainRate":
+                        record[key] = round(float(record[key]), 1)
+                    elif key == "RainRate":
                         record[key] = round(float(record[key]), 2)
 
-            return {"origen": self.origen, "data": data}
+            return {
+                "origen": "CENTENARIO",
+                "data": data,
+            }  # Fijado origen como "CENTENARIO"
         except Exception as e:
             logger.error(f"Error calculating hourly averages: {e}")
             raise
@@ -118,7 +148,7 @@ class CSVPublisher:
         try:
             response = requests.post(
                 self.endpoint_url,
-                headers=self.headers,
+                headers={"Content-Type": "application/json"},
                 data=json.dumps(data),
             )
             response.raise_for_status()
@@ -130,38 +160,78 @@ class CSVPublisher:
             logger.error(f"[{datetime.now()}] Error sending data to endpoint: {e}")
             return False
 
-    def run_once(self) -> None:
+    def run(self) -> None:
         """
-        Run the publisher to send hourly averages once per execution.
+        Run the publisher, checking the control file to determine the state.
+        Executes once per hour if in RUNNING state.
         """
-        try:
-            # Obtener la fecha actual
-            now = datetime.now()
-            year, month, day = (
-                now.strftime("%Y"),
-                now.strftime("%m"),
-                now.strftime("%d"),
-            )
+        logger.info("Starting publisher...")
+        while True:
+            try:
+                # Leer el archivo de control
+                control = self._read_control_file()
+                state = control.get("publisher", "STOPPED").upper()
 
-            # Leer el CSV
-            df = self._read_csv(year, month, day)
+                # Verificar el estado
+                if state == "STOPPED":
+                    logger.info("Publisher stopped by control file.")
+                    break  # Salir del bucle y terminar el script
+                elif state == "PAUSED":
+                    logger.info("Publisher paused. Waiting for state change...")
+                    time.sleep(self.check_interval)
+                    continue
+                elif state == "RUNNING":
+                    # Verificar si ha pasado una hora desde la última ejecución
+                    now = datetime.now()
+                    if (
+                        not self.last_execution
+                        or (now - self.last_execution).total_seconds() >= 3600
+                    ):
+                        logger.info("Executing publish cycle...")
+                        # Obtener la fecha actual
+                        year, month, day = (
+                            now.strftime("%Y"),
+                            now.strftime("%m"),
+                            now.strftime("%d"),
+                        )
 
-            # Calcular promedios horarios
-            hourly_data = self._calculate_hourly_averages(df)
+                        # Leer el CSV
+                        df = self._read_csv(year, month, day)
 
-            # Enviar a la API
-            success = self._send_to_endpoint(hourly_data)
-            if not success:
-                logger.warning(f"[{datetime.now()}] Failed to send data")
-        except Exception as e:
-            logger.error(f"[{datetime.now()}] Error in publisher run_once: {e}")
+                        # Calcular promedios horarios
+                        hourly_data = self._calculate_hourly_averages(df)
+
+                        # Enviar a la API
+                        success = self._send_to_endpoint(hourly_data)
+                        if not success:
+                            logger.warning("Failed to send data, continuing...")
+
+                        # Actualizar la última ejecución
+                        self.last_execution = now
+                    else:
+                        logger.debug("Not yet time for next execution. Waiting...")
+                else:
+                    logger.warning(
+                        f"Unknown state for publisher in control file: {state}. Defaulting to PAUSED."
+                    )
+                    time.sleep(self.check_interval)
+                    continue
+
+                # Esperar antes de verificar el archivo de control nuevamente
+                time.sleep(self.check_interval)
+
+            except Exception as e:
+                logger.error(f"Error in publisher run loop: {e}")
+                time.sleep(self.check_interval)
 
 
 def main():
-    """Main function to start the publisher for a single execution."""
+    """Main function to start the publisher."""
     try:
         publisher = CSVPublisher()
-        publisher.run_once()
+        publisher.run()
+    except KeyboardInterrupt:
+        logger.info("Publisher stopped by user")
     except Exception as e:
         logger.error(f"Publisher failed to start: {e}")
 
