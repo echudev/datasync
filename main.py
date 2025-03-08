@@ -26,13 +26,16 @@ log_dir = "logs"
 if not os.path.exists(log_dir):
     os.makedirs(log_dir)
 
-# Configure logging
+# Configure logging (centralizado para todos los módulos)
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO,  # Nivel INFO para eventos clave y errores
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    handlers=[logging.StreamHandler(), logging.FileHandler("logs/data_collection.log")],
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler(os.path.join(log_dir, "data_collection.log")),
+    ],
 )
-logger = logging.getLogger("data_collector")
+logger = logging.getLogger("data_collection")  # Logger principal
 
 
 class StationConfig(TypedDict):
@@ -50,12 +53,11 @@ class ControlState(TypedDict):
 
 async def shutdown(collector: DataCollector, publisher: CSVPublisher) -> None:
     """Perform a graceful shutdown for both data collector and publisher."""
-    logger.info("Shutting down...")
+    logger.info("Shutting down DataCollector and Publisher...")
     if collector:
         collector.state = CollectorState.STOPPING
         await asyncio.sleep(1)  # Dar tiempo a que termine
     if publisher:
-        # Actualizar control.json para detener el publisher
         with open("control.json", "w") as f:
             json.dump(
                 {"data_collector": "STOPPED", "publisher": "STOPPED"}, f, indent=4
@@ -94,16 +96,15 @@ async def run_gui(
             control[service] = state
             with open("control.json", "w") as f:
                 json.dump(control, f, indent=4)
-            logger.info(f"Updated {service} state to {state}")
+            logger.info(f"{service.capitalize()} state updated to {state}")
             if state == "STOPPED" and service == "data_collector":
                 collector.state = CollectorState.STOPPING
                 for task in tasks:
                     task.cancel()
             elif state == "STOPPED" and service == "publisher":
-                # El hilo de publisher verificará el estado en control.json y se detendrá
                 logger.info("Publisher stop requested via GUI")
         except Exception as e:
-            logger.error(f"Error updating control file: {e}")
+            logger.error(f"Error updating control file for {service}: {e}")
 
     # Configurar la interfaz
     tk.Label(
@@ -199,7 +200,7 @@ async def main() -> None:
         collector.set_columns(columns)
 
         # Iniciar publisher en un hilo separado
-        publisher = CSVPublisher()
+        publisher = CSVPublisher(logger=logger)  # Pasar el logger compartido
         publisher_thread = None
 
         # Escribir estado inicial en control.json
@@ -215,7 +216,7 @@ async def main() -> None:
             publisher_thread = threading.Thread(target=publisher.run)
             publisher_thread.daemon = True  # El hilo se detendrá al cerrar el programa
             publisher_thread.start()
-            logger.info("Publisher thread started.")
+            logger.info("Publisher started")
 
         # Manejo de señales para Windows
         if platform.system() == "Windows":
@@ -262,7 +263,7 @@ async def main() -> None:
         try:
             await asyncio.gather(*collection_tasks, processing_task)
         except asyncio.CancelledError:
-            logger.info("Tasks canceled")
+            logger.info("Collection tasks canceled")
         finally:
             await shutdown(collector, publisher)
             window.destroy()

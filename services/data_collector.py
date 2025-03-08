@@ -94,7 +94,7 @@ class DataCollector:
         name = sensor_config["name"]
         scan_interval = sensor_config["scan_interval"]
 
-        self.logger.info(f"Starting data collection for {name}")
+        self.logger.info(f"Starting data collection for sensor {name}")
         try:
             while self.state == CollectorState.RUNNING:
                 start_time = datetime.now()
@@ -117,7 +117,7 @@ class DataCollector:
             self.logger.error(f"Error in data collection for {name}: {e}")
             raise
         finally:
-            self.logger.info(f"Stopped data collection for {name}")
+            self.logger.info(f"Stopped data collection for sensor {name}")
 
     async def process_and_save_data(
         self, output_interval: float = 60.0, batch_size: int = 10
@@ -160,13 +160,9 @@ class DataCollector:
                         del self.data_buffer[timestamp_key]
 
                 if process_time.minute == 59 and self.data_to_save:
-                    self.logger.debug(f"Forcing save at hour boundary: {timestamp_key}")
                     await self._save_batch_data(self.data_to_save)
                     self.data_to_save.clear()
                 elif len(self.data_to_save) >= batch_size:
-                    self.logger.debug(
-                        f"Saving batch of {len(self.data_to_save)} records"
-                    )
                     await self._save_batch_data(self.data_to_save)
                     self.data_to_save.clear()
 
@@ -174,7 +170,6 @@ class DataCollector:
             self.logger.error(f"Error in data processing: {e}")
         finally:
             if self.data_to_save:
-                self.logger.info(f"Saving remaining {len(self.data_to_save)} records")
                 await self._save_batch_data(self.data_to_save)
             self.logger.info("Stopped data processing task")
 
@@ -199,11 +194,13 @@ class DataCollector:
         output_dir = self.output_path / year / month
         output_file = output_dir / f"{day}.csv"
 
-        output_dir.mkdir(parents=True, exist_ok=True)
-        file_exists = output_file.exists()
-
-        df.to_csv(output_file, mode="a", index=False, header=not file_exists)
-        self.logger.info(f"Batch data written to {output_file}")
+        try:
+            output_dir.mkdir(parents=True, exist_ok=True)
+            file_exists = output_file.exists()
+            df.to_csv(output_file, mode="a", index=False, header=not file_exists)
+        except Exception as e:
+            self.logger.error(f"Error saving batch data to {output_file}: {e}")
+            raise
 
     def set_columns(self, columns: List[str]) -> None:
         """Set the CSV column names."""
