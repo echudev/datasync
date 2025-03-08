@@ -1,4 +1,4 @@
 {
-    "data_collector": "PAUSED",
-    "publisher": "PAUSED"
+    "data_collector": "RUNNING",
+    "publisher": "RUNNING"
 }
