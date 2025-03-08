@@ -22,7 +22,7 @@ if not os.path.exists(log_dir):
 
 # Configure logging al inicio del script
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,  # Mantener DEBUG para depuración
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     handlers=[
         logging.StreamHandler(),
@@ -142,7 +142,9 @@ class CSVPublisher:
             df = (
                 df.copy()
             )  # Trabajar con una copia para evitar problemas de modificación
-            df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
+            df["timestamp"] = pd.to_datetime(
+                df["timestamp"], errors="coerce", format="%Y-%m-%d %H:%M"
+            )
             if df["timestamp"].isnull().all():
                 raise ValueError("All timestamps are invalid or null")
 
@@ -156,21 +158,42 @@ class CSVPublisher:
             # Convertir Timestamp a string antes de devolver los datos
             df_hourly["timestamp"] = df_hourly["timestamp"].astype(str)
 
-            # Redondear promedios
+            # Redondear promedios y manejar NaN
             data = df_hourly.to_dict(orient="records")
-            for record in data:
-                for key in record:
-                    if (
-                        key != "timestamp"
-                        and key != "RainRate"
-                        and pd.api.types.is_numeric_dtype(df[key])
-                    ):
-                        record[key] = round(float(record[key]), 1)
-                    elif key == "RainRate" and pd.api.types.is_numeric_dtype(df[key]):
-                        record[key] = round(float(record[key]), 2)
 
-            result = {"origen": "CENTENARIO", "data": data}
-            logger.info("Hourly averages calculated successfully")
+            # Mapear claves de los datos a los encabezados esperados por Google Apps Script
+            header_mapping = {
+                "Temperature": "TEMP",
+                "Humidity": "HR",
+                "Pressure": "PA",
+                "WindSpeed": "VV",
+                "WindDirection": "DV",
+                "RainRate": "LLUVIA",
+                "UV": "UV",
+                "SolarRadiation": "RS",
+            }
+
+            new_data = []
+            for record in data:
+                new_record = {"timestamp": record["timestamp"]}
+                for old_key, new_key in header_mapping.items():
+                    value = record.get(old_key)
+                    if pd.isna(value):
+                        new_record[new_key] = (
+                            None  # Reemplazar NaN con None (JSON null)
+                        )
+                    else:
+                        if new_key == "LLUVIA":
+                            new_record[new_key] = round(float(value), 2)
+                        else:
+                            new_record[new_key] = round(float(value), 1)
+                new_data.append(new_record)
+
+            result = {"origen": "CENTENARIO", "data": new_data}
+            logger.info(
+                f"Hourly averages calculated successfully. Number of averages: {len(new_data)}"
+            )
+            logger.debug(f"Calculated averages: {json.dumps(result, indent=2)}")
             return result
         except Exception as e:
             logger.error(f"Error calculating hourly averages: {e}")
