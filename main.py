@@ -1,8 +1,8 @@
 """
 Data Collection System
 
-Main entry point for the data collection system, coordinating sensor data
-collection, publisher control, and graceful shutdown using a control file.
+Main entry point for the data collection system with a Tkinter GUI to control
+DataCollector and Publisher services using a control file.
 """
 
 import os
@@ -13,6 +13,8 @@ import signal
 import sys
 import platform
 import subprocess
+import tkinter as tk
+from tkinter import ttk
 from pathlib import Path
 from typing import List, TypedDict
 
@@ -68,19 +70,113 @@ async def shutdown(
             logger.warning("Publisher process killed after timeout")
 
 
-def signal_handler(
+async def update_status(window: tk.Tk, status_labels: dict) -> None:
+    """Update the status labels periodically by reading control.json."""
+    while True:
+        try:
+            with open("control.json", "r") as f:
+                control = json.load(f)
+            status_labels["data_collector"].config(
+                text=f"Data Collector: {control['data_collector']}"
+            )
+            status_labels["publisher"].config(text=f"Publisher: {control['publisher']}")
+        except Exception as e:
+            logger.error(f"Error updating status: {e}")
+        await asyncio.sleep(2)  # Actualizar cada 2 segundos
+
+
+async def run_gui(
+    window: tk.Tk,
     collector: DataCollector,
     publisher_process: subprocess.Popen,
-    loop: asyncio.AbstractEventLoop,
+    tasks: List[asyncio.Task],
 ) -> None:
-    """Handle OS signals for graceful shutdown."""
-    logger.info("Received termination signal")
-    asyncio.create_task(shutdown(collector, publisher_process))
-    loop.call_later(2, loop.stop)
+    """Run the Tkinter GUI and handle events asynchronously."""
+
+    def update_control(service: str, state: str) -> None:
+        try:
+            with open("control.json", "r") as f:
+                control = json.load(f)
+            control[service] = state
+            with open("control.json", "w") as f:
+                json.dump(control, f, indent=4)
+            logger.info(f"Updated {service} state to {state}")
+            if state == "STOPPED" and service == "data_collector":
+                collector.state = CollectorState.STOPPING
+                for task in tasks:
+                    task.cancel()
+            elif state == "STOPPED" and service == "publisher" and publisher_process:
+                publisher_process.terminate()
+                try:
+                    publisher_process.wait(timeout=5)
+                    logger.info("Publisher stopped")
+                except subprocess.TimeoutExpired:
+                    publisher_process.kill()
+                    logger.warning("Publisher process killed after timeout")
+        except Exception as e:
+            logger.error(f"Error updating control file: {e}")
+
+    # Configurar la interfaz
+    tk.Label(
+        window, text="Data Collection and Publishing System", font=("Arial", 14, "bold")
+    ).pack(pady=10)
+
+    # Data Collector
+    tk.Label(window, text="Data Collector", font=("Arial", 12, "bold")).pack(pady=5)
+    dc_frame = ttk.Frame(window)
+    dc_frame.pack(pady=5)
+    ttk.Button(
+        dc_frame,
+        text="Iniciar",
+        command=lambda: update_control("data_collector", "RUNNING"),
+    ).grid(row=0, column=0, padx=5)
+    ttk.Button(
+        dc_frame,
+        text="Pausar",
+        command=lambda: update_control("data_collector", "PAUSED"),
+    ).grid(row=0, column=1, padx=5)
+    ttk.Button(
+        dc_frame,
+        text="Detener",
+        command=lambda: update_control("data_collector", "STOPPED"),
+    ).grid(row=0, column=2, padx=5)
+    dc_status = tk.Label(window, text="Data Collector: RUNNING", font=("Arial", 10))
+    dc_status.pack(pady=5)
+
+    # Publisher
+    tk.Label(window, text="Publisher", font=("Arial", 12, "bold")).pack(pady=5)
+    pub_frame = ttk.Frame(window)
+    pub_frame.pack(pady=5)
+    ttk.Button(
+        pub_frame,
+        text="Iniciar",
+        command=lambda: update_control("publisher", "RUNNING"),
+    ).grid(row=0, column=0, padx=5)
+    ttk.Button(
+        pub_frame, text="Pausar", command=lambda: update_control("publisher", "PAUSED")
+    ).grid(row=0, column=1, padx=5)
+    ttk.Button(
+        pub_frame,
+        text="Detener",
+        command=lambda: update_control("publisher", "STOPPED"),
+    ).grid(row=0, column=2, padx=5)
+    pub_status = tk.Label(window, text="Publisher: RUNNING", font=("Arial", 10))
+    pub_status.pack(pady=5)
+
+    status_labels = {"data_collector": dc_status, "publisher": pub_status}
+
+    # Tarea para actualizar el estado
+    asyncio.create_task(update_status(window, status_labels))
+
+    # Iniciar el bucle de eventos de Tkinter
+    while True:
+        if window.state() != "withdrawn":  # Verificar si la ventana está abierta
+            window.update()
+        await asyncio.sleep(0.01)  # Pequeña pausa para no bloquear el bucle
 
 
 async def main() -> None:
-    """Main entry point for the application."""
+    """Main entry point for the application with Tkinter GUI."""
     logger.info("Starting data collection system")
 
     # Cargar configuración desde archivo
@@ -123,8 +219,23 @@ async def main() -> None:
                 text=True,
             )
             logger.info(f"Publisher started with PID {publisher_process.pid}")
+            # Leer stderr para capturar errores inmediatamente después de iniciar el proceso
+            await asyncio.sleep(1)  # Dar tiempo al proceso para iniciar
+            if (
+                publisher_process.poll() is not None
+            ):  # Verificar si el proceso ya terminó
+                stdout, stderr = publisher_process.communicate(timeout=5)
+                logger.error(
+                    f"Publisher process exited with code {publisher_process.returncode}"
+                )
+                if stdout:
+                    logger.error(f"Publisher stdout: {stdout}")
+                if stderr:
+                    logger.error(f"Publisher stderr: {stderr}")
+                raise RuntimeError("Publisher process failed to start")
         except Exception as e:
             logger.error(f"Error starting publisher: {e}")
+            publisher_process = None
 
         # Escribir estado inicial en control.json
         with open("control.json", "w") as f:
@@ -132,24 +243,24 @@ async def main() -> None:
                 {"data_collector": "RUNNING", "publisher": "RUNNING"}, f, indent=4
             )
 
-        loop = asyncio.get_running_loop()
-
-        # Manejo de signals dependiendo el sistema operativo
-        if platform.system() != "Windows":
-            for sig in (signal.SIGINT, signal.SIGTERM):
-                loop.add_signal_handler(
-                    sig, lambda: signal_handler(collector, publisher_process, loop)
-                )
-        else:
+        # Manejo de señales para Windows
+        if platform.system() == "Windows":
 
             async def windows_signal_handler():
                 try:
                     while collector.state != CollectorState.STOPPING:
                         await asyncio.sleep(0.1)
                 except asyncio.CancelledError:
-                    signal_handler(collector, publisher_process, loop)
+                    asyncio.create_task(shutdown(collector, publisher_process))
 
             asyncio.create_task(windows_signal_handler())
+        else:
+            # Manejo de señales para Unix
+            def handle_shutdown():
+                asyncio.create_task(shutdown(collector, publisher_process))
+
+            for sig in (signal.SIGINT, signal.SIGTERM):
+                signal.signal(sig, lambda signum, frame: handle_shutdown())
 
         # Tareas de colección
         collection_tasks = [
@@ -160,48 +271,26 @@ async def main() -> None:
             collector.process_and_save_data(output_interval=60.0, batch_size=10)
         )
 
-        tasks = collection_tasks + [processing_task]
+        # Crear y correr la ventana de Tkinter
+        window = tk.Tk()
+        window.title("Data Collection and Publishing System")
+        window.geometry("400x300")
+        asyncio.create_task(
+            run_gui(
+                window,
+                collector,
+                publisher_process,
+                collection_tasks + [processing_task],
+            )
+        )
+
         try:
-            # Bucle de control para manejar comandos del usuario
-            while True:
-                command = input("> ").strip().lower()
-                if command in ["start", "pause", "stop", "exit"]:
-                    with open("control.json", "r") as f:
-                        control = json.load(f)
-                    if command == "start":
-                        control["data_collector"] = "RUNNING"
-                        control["publisher"] = "RUNNING"
-                        logger.info("Starting both services")
-                    elif command == "pause":
-                        control["data_collector"] = "PAUSED"
-                        control["publisher"] = "PAUSED"
-                        logger.info("Pausing both services")
-                    elif command == "stop":
-                        control["data_collector"] = "STOPPED"
-                        control["publisher"] = "STOPPED"
-                        logger.info("Stopping both services")
-                    elif command == "exit":
-                        control["data_collector"] = "STOPPED"
-                        control["publisher"] = "STOPPED"
-                        logger.info("Exiting...")
-                        break
-                    with open("control.json", "w") as f:
-                        json.dump(control, f, indent=4)
-                else:
-                    print(
-                        "Unknown command. Available commands: start, pause, stop, exit"
-                    )
-
-                await asyncio.sleep(
-                    0.1
-                )  # Pequeña pausa para evitar consumo excesivo de CPU
-
-            # Esperar a que las tareas terminen
-            await asyncio.gather(*tasks)
+            await asyncio.gather(*collection_tasks, processing_task)
         except asyncio.CancelledError:
             logger.info("Tasks canceled")
         finally:
             await shutdown(collector, publisher_process)
+            window.destroy()
             logger.info("Data collection system stopped")
 
 
