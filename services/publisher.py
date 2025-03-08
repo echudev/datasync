@@ -15,13 +15,24 @@ import requests
 from dotenv import load_dotenv
 from typing import Dict, Any
 
-# Configure logging
+# Crear la carpeta 'logs' si no existe
+log_dir = "logs"
+if not os.path.exists(log_dir):
+    os.makedirs(log_dir)
+
+# Configure logging al inicio del script
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    handlers=[logging.StreamHandler(), logging.FileHandler("publisher.log")],
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler(os.path.join(log_dir, "publisher.log")),
+    ],
 )
 logger = logging.getLogger("publisher")
+logger.info(
+    "Initializing publisher script..."
+)  # Log inicial para confirmar que el script inicia
 
 
 class CSVPublisher:
@@ -43,13 +54,16 @@ class CSVPublisher:
             control_file (str): Path to the control file (default: "control.json").
             check_interval (int): Interval in seconds to check the control file (default: 5).
         """
+        logger.info("Creating CSVPublisher instance...")
         load_dotenv()
         self.csv_dir = csv_dir
         self.endpoint_url = endpoint_url or os.getenv("GOOGLE_POST_URL")
         if not self.endpoint_url:
+            logger.error("GOOGLE_POST_URL not found in .env or as argument.")
             raise ValueError(
                 "Endpoint URL must be provided or set in .env as GOOGLE_POST_URL"
             )
+        logger.info(f"Using endpoint URL: {self.endpoint_url}")
         self.control_file = control_file
         self.check_interval = check_interval
         self.last_execution = None  # Para rastrear la última ejecución
@@ -67,7 +81,9 @@ class CSVPublisher:
         """
         try:
             with open(self.control_file, "r") as f:
-                return json.load(f)
+                control = json.load(f)
+            logger.debug(f"Read control file: {control}")
+            return control
         except FileNotFoundError:
             logger.error(
                 f"Control file {self.control_file} not found. Defaulting to STOPPED."
@@ -95,9 +111,11 @@ class CSVPublisher:
         """
         try:
             csv_path = os.path.join(self.csv_dir, year, month, f"{day}.csv")
+            logger.info(f"Reading CSV file: {csv_path}")
             if not os.path.exists(csv_path):
                 raise FileNotFoundError(f"CSV file not found: {csv_path}")
             df = pd.read_csv(csv_path)
+            logger.info(f"Successfully read CSV file with {len(df)} rows")
             return df
         except Exception as e:
             logger.error(f"Error reading CSV file: {e}")
@@ -112,25 +130,48 @@ class CSVPublisher:
 
         Returns:
             Dict[str, Any]: Dictionary with hourly averages, rounded appropriately.
+
+        Raises:
+            Exception: If calculation fails.
         """
         try:
-            # Convert timestamp to datetime and group by hour
-            df["timestamp"] = pd.to_datetime(df["timestamp"])
-            df_hourly = df.groupby(df["timestamp"].dt.floor("H")).mean().reset_index()
+            logger.info("Calculating hourly averages...")
+            # Verificar y convertir timestamp sin sobrescribir directamente
+            if "timestamp" not in df.columns:
+                raise ValueError("Column 'timestamp' not found in CSV data")
+            df = (
+                df.copy()
+            )  # Trabajar con una copia para evitar problemas de modificación
+            df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
+            if df["timestamp"].isnull().all():
+                raise ValueError("All timestamps are invalid or null")
 
-            # Redondear promedios: 1 decimal para todo menos RainRate (2 decimales)
+            # Agrupar por hora y calcular promedios
+            df_hourly = (
+                df.groupby(df["timestamp"].dt.floor("H"))
+                .mean(numeric_only=True)
+                .reset_index()
+            )
+
+            # Convertir Timestamp a string antes de devolver los datos
+            df_hourly["timestamp"] = df_hourly["timestamp"].astype(str)
+
+            # Redondear promedios
             data = df_hourly.to_dict(orient="records")
             for record in data:
                 for key in record:
-                    if key != "timestamp" and key != "RainRate":
+                    if (
+                        key != "timestamp"
+                        and key != "RainRate"
+                        and pd.api.types.is_numeric_dtype(df[key])
+                    ):
                         record[key] = round(float(record[key]), 1)
-                    elif key == "RainRate":
+                    elif key == "RainRate" and pd.api.types.is_numeric_dtype(df[key]):
                         record[key] = round(float(record[key]), 2)
 
-            return {
-                "origen": "CENTENARIO",
-                "data": data,
-            }  # Fijado origen como "CENTENARIO"
+            result = {"origen": "CENTENARIO", "data": data}
+            logger.info("Hourly averages calculated successfully")
+            return result
         except Exception as e:
             logger.error(f"Error calculating hourly averages: {e}")
             raise
@@ -146,6 +187,7 @@ class CSVPublisher:
             bool: True if successful, False otherwise.
         """
         try:
+            logger.info(f"Sending data to endpoint: {self.endpoint_url}")
             response = requests.post(
                 self.endpoint_url,
                 headers={"Content-Type": "application/json"},
@@ -228,6 +270,7 @@ class CSVPublisher:
 def main():
     """Main function to start the publisher."""
     try:
+        logger.info("Starting main function...")
         publisher = CSVPublisher()
         publisher.run()
     except KeyboardInterrupt:
