@@ -12,13 +12,13 @@ import logging
 import signal
 import sys
 import platform
-import subprocess
+import threading
 import tkinter as tk
 from tkinter import ttk
 from pathlib import Path
 from typing import List, TypedDict
 
-from services import DataCollector, SensorConfig, CollectorState, Sensor
+from services import DataCollector, SensorConfig, CollectorState, Sensor, CSVPublisher
 from drivers import DavisVantagePro2
 
 # Crear la carpeta 'logs' si no existe
@@ -48,26 +48,19 @@ class ControlState(TypedDict):
     publisher: str
 
 
-async def shutdown(
-    collector: DataCollector, publisher_process: subprocess.Popen
-) -> None:
+async def shutdown(collector: DataCollector, publisher: CSVPublisher) -> None:
     """Perform a graceful shutdown for both data collector and publisher."""
     logger.info("Shutting down...")
     if collector:
         collector.state = CollectorState.STOPPING
         await asyncio.sleep(1)  # Dar tiempo a que termine
-    if publisher_process and publisher_process.poll() is None:
+    if publisher:
+        # Actualizar control.json para detener el publisher
         with open("control.json", "w") as f:
             json.dump(
                 {"data_collector": "STOPPED", "publisher": "STOPPED"}, f, indent=4
             )
-        publisher_process.terminate()
-        try:
-            publisher_process.wait(timeout=5)
-            logger.info("Publisher stopped")
-        except subprocess.TimeoutExpired:
-            publisher_process.kill()
-            logger.warning("Publisher process killed after timeout")
+        logger.info("Publisher stopped")
 
 
 async def update_status(window: tk.Tk, status_labels: dict) -> None:
@@ -88,7 +81,8 @@ async def update_status(window: tk.Tk, status_labels: dict) -> None:
 async def run_gui(
     window: tk.Tk,
     collector: DataCollector,
-    publisher_process: subprocess.Popen,
+    publisher: CSVPublisher,
+    publisher_thread: threading.Thread,
     tasks: List[asyncio.Task],
 ) -> None:
     """Run the Tkinter GUI and handle events asynchronously."""
@@ -105,14 +99,9 @@ async def run_gui(
                 collector.state = CollectorState.STOPPING
                 for task in tasks:
                     task.cancel()
-            elif state == "STOPPED" and service == "publisher" and publisher_process:
-                publisher_process.terminate()
-                try:
-                    publisher_process.wait(timeout=5)
-                    logger.info("Publisher stopped")
-                except subprocess.TimeoutExpired:
-                    publisher_process.kill()
-                    logger.warning("Publisher process killed after timeout")
+            elif state == "STOPPED" and service == "publisher":
+                # El hilo de publisher verificará el estado en control.json y se detendrá
+                logger.info("Publisher stop requested via GUI")
         except Exception as e:
             logger.error(f"Error updating control file: {e}")
 
@@ -209,39 +198,24 @@ async def main() -> None:
     async with DataCollector(output_path=Path("data"), logger=logger) as collector:
         collector.set_columns(columns)
 
-        # Iniciar publisher como subprocesso
-        publisher_process = None
-        try:
-            publisher_process = subprocess.Popen(
-                ["python", "publisher.py"],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-            )
-            logger.info(f"Publisher started with PID {publisher_process.pid}")
-            # Leer stderr para capturar errores inmediatamente después de iniciar el proceso
-            await asyncio.sleep(1)  # Dar tiempo al proceso para iniciar
-            if (
-                publisher_process.poll() is not None
-            ):  # Verificar si el proceso ya terminó
-                stdout, stderr = publisher_process.communicate(timeout=5)
-                logger.error(
-                    f"Publisher process exited with code {publisher_process.returncode}"
-                )
-                if stdout:
-                    logger.error(f"Publisher stdout: {stdout}")
-                if stderr:
-                    logger.error(f"Publisher stderr: {stderr}")
-                raise RuntimeError("Publisher process failed to start")
-        except Exception as e:
-            logger.error(f"Error starting publisher: {e}")
-            publisher_process = None
+        # Iniciar publisher en un hilo separado
+        publisher = CSVPublisher()
+        publisher_thread = None
 
         # Escribir estado inicial en control.json
         with open("control.json", "w") as f:
             json.dump(
                 {"data_collector": "RUNNING", "publisher": "RUNNING"}, f, indent=4
             )
+
+        # Iniciar el hilo de publisher si está en estado RUNNING
+        with open("control.json", "r") as f:
+            control = json.load(f)
+        if control.get("publisher", "STOPPED").upper() == "RUNNING":
+            publisher_thread = threading.Thread(target=publisher.run)
+            publisher_thread.daemon = True  # El hilo se detendrá al cerrar el programa
+            publisher_thread.start()
+            logger.info("Publisher thread started.")
 
         # Manejo de señales para Windows
         if platform.system() == "Windows":
@@ -251,13 +225,13 @@ async def main() -> None:
                     while collector.state != CollectorState.STOPPING:
                         await asyncio.sleep(0.1)
                 except asyncio.CancelledError:
-                    asyncio.create_task(shutdown(collector, publisher_process))
+                    asyncio.create_task(shutdown(collector, publisher))
 
             asyncio.create_task(windows_signal_handler())
         else:
             # Manejo de señales para Unix
             def handle_shutdown():
-                asyncio.create_task(shutdown(collector, publisher_process))
+                asyncio.create_task(shutdown(collector, publisher))
 
             for sig in (signal.SIGINT, signal.SIGTERM):
                 signal.signal(sig, lambda signum, frame: handle_shutdown())
@@ -279,7 +253,8 @@ async def main() -> None:
             run_gui(
                 window,
                 collector,
-                publisher_process,
+                publisher,
+                publisher_thread,
                 collection_tasks + [processing_task],
             )
         )
@@ -289,7 +264,7 @@ async def main() -> None:
         except asyncio.CancelledError:
             logger.info("Tasks canceled")
         finally:
-            await shutdown(collector, publisher_process)
+            await shutdown(collector, publisher)
             window.destroy()
             logger.info("Data collection system stopped")
 
