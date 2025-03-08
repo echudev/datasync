@@ -10,10 +10,17 @@ import json
 import time
 import logging
 from datetime import datetime
+from enum import Enum
 import pandas as pd
 import requests
 from dotenv import load_dotenv
 from typing import Dict, Any, Optional
+
+
+class PublisherState(Enum):
+    RUNNING = 1
+    STOPPING = 2
+    STOPPED = 3
 
 
 class CSVPublisher:
@@ -49,6 +56,7 @@ class CSVPublisher:
         self.control_file = control_file
         self.check_interval = check_interval
         self.last_execution = None
+        self.state = PublisherState.RUNNING
         self.logger = logger or logging.getLogger(
             "publisher"
         )  # Usar logger compartido o crear uno local
@@ -200,25 +208,34 @@ class CSVPublisher:
 
     def run(self) -> None:
         """
-        Run the publisher, checking the control file to determine the state.
+        Run the publisher, checking both internal state and control file.
         Executes once per hour if in RUNNING state.
         """
         self.logger.info("Starting Publisher...")
-        while True:
+        while self.state != PublisherState.STOPPED:
             try:
-                # Leer el archivo de control
+                # Check the control file to sync with external commands
                 control = self._read_control_file()
-                state = control.get("publisher", "STOPPED").upper()
+                file_state = control.get("publisher", "STOPPED").upper()
 
-                # Verificar el estado
-                if state == "STOPPED":
-                    self.logger.info("Publisher stopped by control file.")
-                    break  # Salir del bucle y terminar el script
-                elif state == "PAUSED":
-                    self.logger.info("Publisher paused. Waiting for state change...")
-                    time.sleep(self.check_interval)
-                    continue
-                elif state == "RUNNING":
+                # Sync internal state with control file if needed
+                if (
+                    file_state == "STOPPED"
+                    and self.state != PublisherState.STOPPING
+                    and self.state != PublisherState.STOPPED
+                ):
+                    self.logger.info("Publisher stopping due to control file.")
+                    self.state = PublisherState.STOPPING
+                elif file_state == "RUNNING" and self.state != PublisherState.RUNNING:
+                    self.state = PublisherState.RUNNING
+                    self.logger.info("Publisher resumed via control file.")
+
+                # Verify the state and take action
+                if self.state == PublisherState.STOPPING:
+                    self.logger.info("Publisher stopping gracefully...")
+                    self.state = PublisherState.STOPPED
+                    break
+                elif self.state == PublisherState.RUNNING:
                     # Verificar si ha pasado una hora desde la última ejecución
                     now = datetime.now()
                     if (
@@ -252,7 +269,7 @@ class CSVPublisher:
                         time.sleep(self.check_interval)
                 else:
                     self.logger.info(
-                        f"Unknown state for publisher: {state}. Defaulting to PAUSED."
+                        f"Unknown state for publisher: {self.state}. Defaulting to STOPPED."
                     )  # Cambiado a INFO
                     time.sleep(self.check_interval)
                     continue

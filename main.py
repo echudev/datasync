@@ -18,7 +18,15 @@ from tkinter import ttk
 from pathlib import Path
 from typing import List, TypedDict
 
-from services import DataCollector, SensorConfig, CollectorState, Sensor, CSVPublisher
+from services import (
+    DataCollector,
+    SensorConfig,
+    CollectorState,
+    Sensor,
+    CSVPublisher,
+    PublisherState,
+    WinAQMSPublisher,
+)
 from drivers import DavisVantagePro2
 
 # Crear la carpeta 'logs' si no existe
@@ -49,20 +57,47 @@ class StationConfig(TypedDict):
 class ControlState(TypedDict):
     data_collector: str
     publisher: str
+    winaqms_publisher: str
 
 
-async def shutdown(collector: DataCollector, publisher: CSVPublisher) -> None:
+async def shutdown(
+    collector: DataCollector,
+    publisher: CSVPublisher,
+    winaqms_publisher: WinAQMSPublisher,
+) -> None:
     """Perform a graceful shutdown for both data collector and publisher."""
-    logger.info("Shutting down DataCollector and Publisher...")
+    logger.info("Shutting down services...")
+
+    # 1. Update internal enum states
     if collector:
         collector.state = CollectorState.STOPPING
-        await asyncio.sleep(1)  # Dar tiempo a que termine
+
     if publisher:
-        with open("control.json", "w") as f:
-            json.dump(
-                {"data_collector": "STOPPED", "publisher": "STOPPED"}, f, indent=4
-            )
-        logger.info("Publisher stopped")
+        if hasattr(publisher, "state"):  # Check if publisher has state attribute
+            publisher.state = PublisherState.STOPPING
+
+    if winaqms_publisher:
+        if hasattr(
+            winaqms_publisher, "state"
+        ):  # Check if winaqms_publisher has state attribute
+            winaqms_publisher.state = PublisherState.STOPPING
+
+    # 2. Update control.json for persistence and external control
+    with open("control.json", "w") as f:
+        json.dump(
+            {
+                "data_collector": "STOPPED",
+                "publisher": "STOPPED",
+                "winaqms_publisher": "STOPPED",
+            },
+            f,
+            indent=4,
+        )
+
+    # 3. Give time for tasks to finish gracefully
+    await asyncio.sleep(1)
+
+    logger.info("All services stopped")
 
 
 async def update_status(window: tk.Tk, status_labels: dict) -> None:
@@ -91,18 +126,33 @@ async def run_gui(
 
     def update_control(service: str, state: str) -> None:
         try:
+            # Update control.json
             with open("control.json", "r") as f:
                 control = json.load(f)
             control[service] = state
             with open("control.json", "w") as f:
                 json.dump(control, f, indent=4)
+
             logger.info(f"{service.capitalize()} state updated to {state}")
-            if state == "STOPPED" and service == "data_collector":
-                collector.state = CollectorState.STOPPING
-                for task in tasks:
-                    task.cancel()
-            elif state == "STOPPED" and service == "publisher":
-                logger.info("Publisher stop requested via GUI")
+
+            # Update internal enum states for consistent state management
+            if service == "data_collector":
+                if state == "STOPPED":
+                    collector.state = CollectorState.STOPPING
+                    for task in tasks:
+                        task.cancel()
+                elif state == "RUNNING":
+                    collector.state = CollectorState.RUNNING
+
+            elif service == "publisher" and publisher:
+                if state == "STOPPED":
+                    if hasattr(publisher, "state"):
+                        publisher.state = PublisherState.STOPPING
+                    logger.info("Publisher stop requested via GUI")
+                elif state == "RUNNING":
+                    if hasattr(publisher, "state"):
+                        publisher.state = PublisherState.RUNNING
+
         except Exception as e:
             logger.error(f"Error updating control file for {service}: {e}")
 
@@ -122,11 +172,6 @@ async def run_gui(
     ).grid(row=0, column=0, padx=5)
     ttk.Button(
         dc_frame,
-        text="Pausar",
-        command=lambda: update_control("data_collector", "PAUSED"),
-    ).grid(row=0, column=1, padx=5)
-    ttk.Button(
-        dc_frame,
         text="Detener",
         command=lambda: update_control("data_collector", "STOPPED"),
     ).grid(row=0, column=2, padx=5)
@@ -142,9 +187,6 @@ async def run_gui(
         text="Iniciar",
         command=lambda: update_control("publisher", "RUNNING"),
     ).grid(row=0, column=0, padx=5)
-    ttk.Button(
-        pub_frame, text="Pausar", command=lambda: update_control("publisher", "PAUSED")
-    ).grid(row=0, column=1, padx=5)
     ttk.Button(
         pub_frame,
         text="Detener",
@@ -203,10 +245,22 @@ async def main() -> None:
         publisher = CSVPublisher(logger=logger)  # Pasar el logger compartido
         publisher_thread = None
 
+        # Iniciar winaqms_publisher en un hilo separado
+        winaqms_publisher = WinAQMSPublisher(
+            logger=logger
+        )  # Pasar el logger compartido
+        winaqms_publisher_thread = None
+
         # Escribir estado inicial en control.json
         with open("control.json", "w") as f:
             json.dump(
-                {"data_collector": "RUNNING", "publisher": "RUNNING"}, f, indent=4
+                {
+                    "data_collector": "RUNNING",
+                    "publisher": "RUNNING",
+                    "winaqms_publisher": "RUNNING",
+                },
+                f,
+                indent=4,
             )
 
         # Iniciar el hilo de publisher si está en estado RUNNING
@@ -218,6 +272,17 @@ async def main() -> None:
             publisher_thread.start()
             logger.info("Publisher started")
 
+        # Iniciar el hilo de winaqms_publisher si está en estado RUNNING
+        with open("control.json", "r") as f:
+            control = json.load(f)
+        if control.get("winaqms_publisher", "STOPPED").upper() == "RUNNING":
+            winaqms_publisher_thread = threading.Thread(target=winaqms_publisher.run)
+            winaqms_publisher_thread.daemon = (
+                True  # El hilo se detendrá al cerrar el programa
+            )
+            winaqms_publisher_thread.start()
+            logger.info("Publisher started")
+
         # Manejo de señales para Windows
         if platform.system() == "Windows":
 
@@ -225,18 +290,22 @@ async def main() -> None:
                 try:
                     while collector.state != CollectorState.STOPPING:
                         await asyncio.sleep(0.1)
+                        await asyncio.sleep(0.1)
                 except asyncio.CancelledError:
-                    asyncio.create_task(shutdown(collector, publisher))
+                    # Pass the winaqms_publisher parameter as None for now
+                    asyncio.create_task(
+                        shutdown(collector, publisher, winaqms_publisher)
+                    )
 
             asyncio.create_task(windows_signal_handler())
         else:
             # Manejo de señales para Unix
             def handle_shutdown():
-                asyncio.create_task(shutdown(collector, publisher))
+                # Pass the winaqms_publisher parameter as None for now
+                asyncio.create_task(shutdown(collector, publisher, winaqms_publisher))
 
             for sig in (signal.SIGINT, signal.SIGTERM):
                 signal.signal(sig, lambda signum, frame: handle_shutdown())
-
         # Tareas de colección
         collection_tasks = [
             asyncio.create_task(collector.collect_data(sensor, config))
@@ -265,7 +334,8 @@ async def main() -> None:
         except asyncio.CancelledError:
             logger.info("Collection tasks canceled")
         finally:
-            await shutdown(collector, publisher)
+            # Pass the winaqms_publisher parameter as None for now
+            await shutdown(collector, publisher, winaqms_publisher)
             window.destroy()
             logger.info("Data collection system stopped")
 
