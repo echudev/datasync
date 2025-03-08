@@ -1,4 +1,5 @@
 {
     "data_collector": "RUNNING",
-    "publisher": "RUNNING"
+    "publisher": "RUNNING",
+    "winaqms_publisher": "RUNNING"
 }
