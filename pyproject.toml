@@ -5,8 +5,12 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "aiohttp>=3.11.13",
     "pandas>=2.2.3",
     "pyserial>=3.5",
+    "pytest>=8.3.5",
+    "pytest-asyncio>=0.25.3",
+    "pytest-mock>=3.14.0",
     "python-dotenv>=1.0.1",
     "requests>=2.32.3",
     "ruff>=0.9.7",
