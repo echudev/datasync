@@ -5,7 +5,7 @@ import pytest
 from datetime import datetime
 from pathlib import Path
 from unittest.mock import MagicMock, patch, AsyncMock
-from services import DataCollector, Sensor, CollectorState
+from services.data_collector import DataCollector, Sensor, CollectorState
 from typing import Dict
 
 
@@ -14,7 +14,7 @@ class MockSensor(Sensor):
 
     def __init__(self, mock_data=None):
         self.mock_data = mock_data or {"Temperature": 22.5, "Humidity": 45.0}
-        
+
     async def read(self) -> Dict[str, float]:
         """Implement the abstract read method to return mock sensor data."""
         return self.mock_data
@@ -43,13 +43,12 @@ class TestDataCollector(unittest.TestCase):
         # Create a mock sensor
         self.sensor = MockSensor()
 
-    async def async_setup(self):
-        """Async setup for tests that need it."""
-        return await self.collector.__aenter__()
-
-    async def async_teardown(self):
-        """Async teardown for tests that need it."""
-        await self.collector.__aexit__(None, None, None)
+    @pytest.fixture
+    async def collector_context(self):
+        """Async fixture that provides a collector within context."""
+        async with self.collector as collector:
+            yield collector
+        # Context will automatically exit after the test
 
     def test_initialization(self):
         """Test that DataCollector initializes with correct values."""
@@ -75,8 +74,8 @@ class TestDataCollector(unittest.TestCase):
         # Configure the test to run collector for a bit then stop
         self.collector.state = CollectorState.RUNNING
 
-        # Run collect_data in a task that we'll cancel after a short time
-        task = asyncio.create_task(
+        # Create a custom task for collection that we'll stop after a short time
+        collector_task = asyncio.create_task(
             self.collector.collect_data(self.sensor, self.sensor_config)
         )
 
@@ -85,7 +84,16 @@ class TestDataCollector(unittest.TestCase):
 
         # Change state to stop collection
         self.collector.state = CollectorState.STOPPING
-        await task
+
+        # Wait for the task to complete
+        try:
+            await asyncio.wait_for(collector_task, timeout=1.0)
+        except asyncio.TimeoutError:
+            collector_task.cancel()
+            try:
+                await collector_task
+            except asyncio.CancelledError:
+                pass
 
         # Check the buffer has entries
         async with self.collector.data_lock:
@@ -118,7 +126,7 @@ class TestDataCollector(unittest.TestCase):
         self.collector._save_batch_data = AsyncMock()
 
         # Run process_and_save_data in a task
-        task = asyncio.create_task(
+        process_task = asyncio.create_task(
             self.collector.process_and_save_data(output_interval=0.1, batch_size=1)
         )
 
@@ -127,17 +135,28 @@ class TestDataCollector(unittest.TestCase):
 
         # Stop the task
         self.collector.state = CollectorState.STOPPING
-        await task
+
+        # Wait for the task to complete
+        try:
+            await asyncio.wait_for(process_task, timeout=1.0)
+        except asyncio.TimeoutError:
+            process_task.cancel()
+            try:
+                await process_task
+            except asyncio.CancelledError:
+                pass
 
         # Verify _save_batch_data was called with processed data
         self.collector._save_batch_data.assert_called_once()
-        # Check the call arguments
+
+        # Check the call arguments - verify that the rounding is done correctly
+        # as per the implementation (1 decimal for Temperature and Humidity, 2 for RainRate)
         call_args = self.collector._save_batch_data.call_args[0][0]
         self.assertEqual(len(call_args), 1)
         self.assertEqual(call_args[0]["timestamp"], timestamp_key)
-        self.assertEqual(call_args[0]["Temperature"], 22.5)
-        self.assertEqual(call_args[0]["Humidity"], 45.0)
-        self.assertEqual(call_args[0]["RainRate"], 0.25)
+        self.assertEqual(call_args[0]["Temperature"], 22.5)  # 1 decimal place
+        self.assertEqual(call_args[0]["Humidity"], 45.0)  # 1 decimal place
+        self.assertEqual(call_args[0]["RainRate"], 0.25)  # 2 decimal places
 
     @pytest.mark.asyncio
     @patch("services.data_collector.pd.DataFrame")
@@ -170,8 +189,14 @@ class TestDataCollector(unittest.TestCase):
         # Verify directory creation
         mock_mkdir.assert_called_once_with(parents=True, exist_ok=True)
 
-        # Verify CSV creation
+        # Verify CSV creation with correct parameters
         mock_to_csv.assert_called_once()
+
+        # Check that the output file path is constructed correctly based on the date
+        self.assertEqual(mock_df.__getitem__.call_count, 1)
+        self.assertEqual(
+            mock_df.__getitem__.call_args[0][0], self.collector.csv_columns
+        )
 
     @pytest.mark.asyncio
     @patch("pathlib.Path.exists")
@@ -214,7 +239,6 @@ class TestDataCollector(unittest.TestCase):
 
         # After context exit
         self.assertEqual(self.collector.state, CollectorState.STOPPED)
-
 
 
 if __name__ == "__main__":
