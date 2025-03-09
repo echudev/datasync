@@ -49,8 +49,9 @@ class WinAQMSPublisher:
         """
         load_dotenv()
         self.wad_dir = wad_dir
-        self.endpoint_url = endpoint_url or os.getenv("GOOGLE_POST_URL")
-        if not self.endpoint_url:
+        # Use None for clarity instead of relying on falsy value
+        self.endpoint_url = endpoint_url if endpoint_url is not None else os.getenv("GOOGLE_POST_URL")
+        if self.endpoint_url is None:
             raise ValueError(
                 "Endpoint URL must be provided or set in .env as GOOGLE_POST_URL"
             )
@@ -255,8 +256,10 @@ class WinAQMSPublisher:
                 for sensor in self.sensors:
                     if sensor in row and not pd.isna(row[sensor]):
                         value = row[sensor]
+                        # Ensure consistent rounding precision with test expectations
                         if sensor in ("C1", "C2", "C3", "C4"):
-                            value = round(value, 3)
+                            # Use consistent rounding method to match test expectations
+                            value = round(float(value), 3)
                         elif sensor == "C6":
                             value = round(value)
                         else:
