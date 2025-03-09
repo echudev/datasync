@@ -138,7 +138,7 @@ class CSVPublisher:
 
             # Agrupar por hora y calcular promedios
             df_hourly = (
-                df.groupby(df["timestamp"].dt.floor("H"))
+                df.groupby(df["timestamp"].dt.floor("h"))
                 .mean(numeric_only=True)
                 .reset_index()
             )
