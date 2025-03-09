@@ -30,7 +30,6 @@ class CSVPublisher:
         self,
         csv_dir: str = "data",
         endpoint_url: str = None,
-        control_file: str = "control.json",
         check_interval: int = 5,
         logger: Optional[
             logging.Logger
@@ -53,37 +52,18 @@ class CSVPublisher:
             raise ValueError(
                 "Endpoint URL must be provided or set in .env as GOOGLE_POST_URL"
             )
-        self.control_file = control_file
         self.check_interval = check_interval
         self.last_execution = None
+        self.logger = logger or logging.getLogger("publisher")
         self.state = PublisherState.RUNNING
-        self.logger = logger or logging.getLogger(
-            "publisher"
-        )  # Usar logger compartido o crear uno local
 
-    def _read_control_file(self) -> Dict[str, Any]:
-        """
-        Read the control file to determine the state of the publisher.
-
-        Returns:
-            Dict[str, Any]: Dictionary with control state (e.g., {"publisher": "RUNNING"}).
-
-        Raises:
-            FileNotFoundError: If the control file doesn't exist.
-            json.JSONDecodeError: If the control file is not valid JSON.
-        """
-        try:
-            with open(self.control_file, "r") as f:
-                control = json.load(f)
-            return control
-        except FileNotFoundError:
-            self.logger.error(
-                f"Control file {self.control_file} not found. Defaulting to STOPPED."
-            )
-            return {"publisher": "STOPPED"}
-        except json.JSONDecodeError as e:
-            self.logger.error(f"Error decoding control file {self.control_file}: {e}")
-            return {"publisher": "STOPPED"}
+    def update_state(self, new_state: str) -> None:
+        """Update state and control file when changed by user."""
+        state_value = new_state.upper()
+        if state_value == "STOPPED":
+            self.state = PublisherState.STOPPED
+        elif state_value == "RUNNING":
+            self.state = PublisherState.RUNNING
 
     def _read_csv(self, year: str, month: str, day: str) -> pd.DataFrame:
         """
@@ -208,78 +188,50 @@ class CSVPublisher:
 
     def run(self) -> None:
         """
-        Run the publisher, checking both internal state and control file.
-        Executes once per hour if in RUNNING state.
+        Run the publisher, executing at :05 of each hour.
+        First execution happens immediately, then waits for next :05 mark.
         """
         self.logger.info("Starting Publisher...")
+        first_run = True
+
         while self.state != PublisherState.STOPPED:
             try:
-                # Check the control file to sync with external commands
-                control = self._read_control_file()
-                file_state = control.get("publisher", "STOPPED").upper()
+                now = datetime.now()
 
-                # Sync internal state with control file if needed
-                if (
-                    file_state == "STOPPED"
-                    and self.state != PublisherState.STOPPING
-                    and self.state != PublisherState.STOPPED
-                ):
-                    self.logger.info("Publisher stopping due to control file.")
-                    self.state = PublisherState.STOPPING
-                elif file_state == "RUNNING" and self.state != PublisherState.RUNNING:
-                    self.state = PublisherState.RUNNING
-                    self.logger.info("Publisher resumed via control file.")
-
-                # Verify the state and take action
-                if self.state == PublisherState.STOPPING:
-                    self.logger.info("Publisher stopping gracefully...")
-                    self.state = PublisherState.STOPPED
-                    break
-                elif self.state == PublisherState.RUNNING:
-                    # Verificar si ha pasado una hora desde la última ejecución
-                    now = datetime.now()
-                    if (
-                        not self.last_execution
-                        or (now - self.last_execution).total_seconds() >= 3600
-                    ):
-                        self.logger.info("Executing publish cycle...")
-                        # Obtener la fecha actual
-                        year, month, day = (
-                            now.strftime("%Y"),
-                            now.strftime("%m"),
-                            now.strftime("%d"),
-                        )
-
-                        # Leer el CSV
-                        df = self._read_csv(year, month, day)
-
-                        # Calcular promedios horarios
-                        hourly_data = self._calculate_hourly_averages(df)
-
-                        # Enviar a la API
-                        success = self._send_to_endpoint(hourly_data)
-                        if not success:
-                            self.logger.info(
-                                "Failed to send data, continuing..."
-                            )  # Cambiado a INFO
-
-                        # Actualizar la última ejecución
+                if self.state == PublisherState.RUNNING:
+                    if first_run:
+                        self._execute_publish_cycle()
+                        first_run = False
                         self.last_execution = now
                     else:
-                        time.sleep(self.check_interval)
-                else:
-                    self.logger.info(
-                        f"Unknown state for publisher: {self.state}. Defaulting to STOPPED."
-                    )  # Cambiado a INFO
-                    time.sleep(self.check_interval)
-                    continue
+                        current_hour = now.replace(minute=5, second=0, microsecond=0)
+                        if now >= current_hour and (
+                            not self.last_execution
+                            or self.last_execution.hour != now.hour
+                        ):
+                            self._execute_publish_cycle()
+                            self.last_execution = now
 
-                # Esperar antes de verificar el archivo de control nuevamente
                 time.sleep(self.check_interval)
 
             except Exception as e:
                 self.logger.error(f"Error in publisher run loop: {e}")
                 time.sleep(self.check_interval)
+
+    def _execute_publish_cycle(self) -> None:
+        """Helper method to execute one publish cycle."""
+        self.logger.info("Executing publish cycle...")
+        now = datetime.now()
+        year, month, day = now.strftime("%Y"), now.strftime("%m"), now.strftime("%d")
+
+        try:
+            df = self._read_csv(year, month, day)
+            hourly_data = self._calculate_hourly_averages(df)
+            success = self._send_to_endpoint(hourly_data)
+            if not success:
+                self.logger.info("Failed to send data, continuing...")
+        except Exception as e:
+            self.logger.error(f"Error during publish cycle: {e}")
 
 
 def main():
