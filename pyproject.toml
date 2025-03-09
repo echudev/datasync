@@ -16,3 +16,6 @@ dependencies = [
     "ruff>=0.9.7",
     "tenacity>=9.0.0",
 ]
+
+[tool.pytest.ini_options]
+asyncio_default_fixture_loop_scope = "function"
