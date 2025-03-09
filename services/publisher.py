@@ -202,7 +202,7 @@ class CSVPublisher:
             response.raise_for_status()
             self.logger.info(f"Data sent successfully: {response.text}")
             return True
-        except requests.exceptions.RequestException as e:
+        except Exception as e:
             self.logger.error(f"Error sending data to endpoint: {e}")
             return False
 
