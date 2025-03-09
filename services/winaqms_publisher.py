@@ -50,7 +50,9 @@ class WinAQMSPublisher:
         load_dotenv()
         self.wad_dir = wad_dir
         # Use None for clarity instead of relying on falsy value
-        self.endpoint_url = endpoint_url if endpoint_url is not None else os.getenv("GOOGLE_POST_URL")
+        self.endpoint_url = (
+            endpoint_url if endpoint_url is not None else os.getenv("GOOGLE_POST_URL")
+        )
         if self.endpoint_url is None:
             raise ValueError(
                 "Endpoint URL must be provided or set in .env as GOOGLE_POST_URL"
@@ -218,7 +220,7 @@ class WinAQMSPublisher:
 
             # Group by hour and calculate averages
             df_hourly = (
-                df.groupby(df["Date_Time"].dt.floor("H"))
+                df.groupby(df["Date_Time"].dt.floor("h"))
                 .mean(numeric_only=True)
                 .reset_index()
             )
@@ -306,11 +308,17 @@ class WinAQMSPublisher:
         Executes once per hour if in RUNNING state.
         """
         self.logger.info("Starting WinAQMS Publisher...")
-        while self.state != PublisherState.STOPPED:
+        force_continue = False
+        while self.state != PublisherState.STOPPED or force_continue:
             try:
                 # Check the control file to sync with external commands
                 control = self._read_control_file()
                 file_state = control.get("winaqms_publisher", "STOPPED").upper()
+
+                # If we're in a forced continuation to check for state changes,
+                # reset the flag after checking the control file
+                if force_continue:
+                    force_continue = False
 
                 # Sync internal state with control file if needed
                 if (
@@ -323,12 +331,17 @@ class WinAQMSPublisher:
                 elif file_state == "RUNNING" and self.state != PublisherState.RUNNING:
                     self.state = PublisherState.RUNNING
                     self.logger.info("WinAQMS Publisher resumed via control file.")
+                    # Set force_continue to true to ensure we don't exit the loop immediately
+                    # when transitioning from STOPPED to RUNNING
+                    force_continue = True
 
                 # Verify the state and take action
                 if self.state == PublisherState.STOPPING:
                     self.logger.info("WinAQMS Publisher stopping gracefully...")
                     self.state = PublisherState.STOPPED
-                    break
+                    # Don't break here, let the loop continue one more time to allow checking
+                    # for potential state changes from the control file
+                    force_continue = True
                 elif self.state == PublisherState.RUNNING:
                     # Check if an hour has passed since last execution
                     now = datetime.now()
@@ -342,16 +355,16 @@ class WinAQMSPublisher:
                         # Process the current day's data
                         process_date = now
                         date = process_date.date()
-                        
+
                         self.logger.info(f"Processing data for {date} (all hours)")
-                        
+
                         try:
                             # Read the WAD file for current day
                             df = self._read_wad_file(process_date)
-                            
+
                             # Calculate hourly averages for all hours in the file
                             hourly_data = self._calculate_hourly_averages(df)
-                            
+
                         except FileNotFoundError:
                             self.logger.warning(
                                 f"WAD file not found for {process_date.strftime('%Y-%m-%d')}"
@@ -361,20 +374,24 @@ class WinAQMSPublisher:
                             for hour in range(24):
                                 timestamp = datetime.combine(date, datetime.min.time())
                                 timestamp = timestamp + timedelta(hours=hour)
-                                data.append({
-                                    "timestamp": timestamp.strftime("%Y-%m-%d %H:00"),
-                                    **{
-                                        self.sensor_map[sensor]: None
-                                        for sensor in self.sensors
-                                    },
-                                })
+                                data.append(
+                                    {
+                                        "timestamp": timestamp.strftime(
+                                            "%Y-%m-%d %H:00"
+                                        ),
+                                        **{
+                                            self.sensor_map[sensor]: None
+                                            for sensor in self.sensors
+                                        },
+                                    }
+                                )
                             hourly_data = {"origen": "CENTENARIO", "data": data}
                         except Exception as e:
                             self.logger.error(f"Error in WinAQMS publish cycle: {e}")
                             # Skip to next interval if there's an error
                             time.sleep(self.check_interval)
                             continue
-                            
+
                         # At this point, hourly_data should be defined either from file or empty template
                         # Send data to endpoint
                         try:
@@ -390,7 +407,7 @@ class WinAQMSPublisher:
                         except Exception as e:
                             self.logger.error(f"Error sending data to endpoint: {e}")
                             success = False
-                            
+
                         # Update last execution time regardless of success
                         self.last_execution = now
 
