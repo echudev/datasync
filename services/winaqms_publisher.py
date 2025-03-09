@@ -7,14 +7,23 @@ controlled by a control file.
 """
 
 import os
-import csv
 import json
 import time
 import logging
 from datetime import datetime, timedelta
 import requests
 from dotenv import load_dotenv
-from typing import Dict, List, Optional, Any
+from enum import Enum
+import pandas as pd
+from typing import Dict, Optional, Any
+
+
+class PublisherState(Enum):
+    """Enumeration for publisher states."""
+
+    RUNNING = 1
+    STOPPING = 2
+    STOPPED = 3
 
 
 class WinAQMSPublisher:
@@ -48,6 +57,7 @@ class WinAQMSPublisher:
         self.control_file = control_file
         self.check_interval = check_interval
         self.last_execution = None
+        self.state = PublisherState.RUNNING
         self.logger = logger or logging.getLogger("winaqms_publisher")
         self._setup_logger()
 
@@ -93,7 +103,7 @@ class WinAQMSPublisher:
             return {"winaqms_publisher": "STOPPED"}
         except json.JSONDecodeError as e:
             self.logger.error(f"Error decoding control file {self.control_file}: {e}")
-            return {"winaqms_publisher": "STOPPED"}
+            return {"winaqms_publisher": "STOPPED", "publisher": "STOPPED"}
 
     def _get_wad_path(self, process_date: datetime) -> str:
         """
@@ -112,39 +122,69 @@ class WinAQMSPublisher:
         wad_file = f"eco{year_str}{month_str}{day_str}.wad"
         return os.path.join(folder_path, wad_file)
 
-    def _process_row_data(
-        self, row_data: Dict[str, List[float]]
-    ) -> Dict[str, Optional[float]]:
+    def _read_wad_file(self, date: datetime) -> pd.DataFrame:
         """
-        Process row data to calculate averages for each sensor.
+        Read the WAD file for the given date.
 
         Args:
-            row_data (Dict[str, List[float]]): Dictionary with sensor data.
+            date (datetime): The date to process.
 
         Returns:
-            Dict[str, Optional[float]]: Dictionary with sensor averages.
-        """
-        averages = {}
-        for sensor, values in row_data.items():
-            if not values:
-                averages[sensor] = None
-                continue
+            pd.DataFrame: DataFrame with the WAD data.
 
-            avg = sum(values) / len(values)
-            if sensor in ("C1", "C2", "C3", "C4"):
-                avg = round(avg, 3)
-            elif sensor == "C6":
-                avg = round(avg)
-            averages[sensor] = avg
-        return averages
-
-    def _calculate_hourly_averages(self, date: datetime, hour: int) -> Dict[str, Any]:
+        Raises:
+            FileNotFoundError: If the WAD file doesn't exist.
+            Exception: For other read errors.
         """
-        Calculate hourly averages from the WAD file for the given date and hour.
+        try:
+            wad_path = self._get_wad_path(date)
+            if not os.path.exists(wad_path):
+                raise FileNotFoundError(f"WAD file not found: {wad_path}")
+
+            # Read WAD file as CSV with pandas
+            df = pd.read_csv(wad_path)
+
+            # Convert Date_Time column to datetime
+            df["Date_Time"] = pd.to_datetime(
+                df["Date_Time"], format="%Y/%m/%d %H:%M:%S", errors="coerce"
+            )
+
+            # Check if conversion was successful
+            if df["Date_Time"].isnull().all():
+                raise ValueError("All Date_Time values are invalid or null")
+
+            return df
+        except Exception as e:
+            self.logger.error(f"Error reading WAD file: {e}")
+            raise
+
+    def _filter_hour_data(self, df: pd.DataFrame, hour: int) -> pd.DataFrame:
+        """
+        Filter the WAD data for a specific hour.
 
         Args:
-            date (datetime): Date to process.
-            hour (int): Hour to process (0-23).
+            df (pd.DataFrame): DataFrame with the WAD data.
+            hour (int): Hour to filter (0-23).
+
+        Returns:
+            pd.DataFrame: DataFrame with data for the specified hour.
+        """
+        # Create time range for filtering
+        date = (
+            df["Date_Time"].dt.date.iloc[0] if not df.empty else datetime.now().date()
+        )
+        start_time = datetime.combine(date, datetime.min.time()) + timedelta(hours=hour)
+        end_time = start_time + timedelta(hours=1)
+
+        # Filter rows for the specified hour
+        return df[(df["Date_Time"] >= start_time) & (df["Date_Time"] < end_time)]
+
+    def _calculate_hourly_averages(self, df: pd.DataFrame) -> Dict[str, Any]:
+        """
+        Calculate hourly averages from the DataFrame.
+
+        Args:
+            df (pd.DataFrame): DataFrame with WAD data.
 
         Returns:
             Dict[str, Any]: Dictionary with hourly averages data formatted for API.
@@ -152,58 +192,86 @@ class WinAQMSPublisher:
         Raises:
             Exception: If calculation fails.
         """
-        wad_path = self._get_wad_path(date)
-
-        if not os.path.exists(wad_path):
-            self.logger.error(f"File not found: {wad_path}")
-            raise FileNotFoundError(f"WAD file not found: {wad_path}")
-
-        start_time = datetime.strptime(
-            f"{date.strftime('%Y/%m/%d')} {hour:02d}:00:00",
-            "%Y/%m/%d %H:%M:%S",
-        )
-        end_time = start_time + timedelta(hours=1)
-
-        sensor_data = {sensor: [] for sensor in self.sensors}
-
         try:
-            with open(wad_path, "r", newline="") as csvfile:
-                reader = csv.DictReader(csvfile)
-                for row in reader:
-                    try:
-                        dt = datetime.strptime(row["Date_Time"], "%Y/%m/%d %H:%M:%S")
-                    except ValueError:
-                        self.logger.warning(f"Invalid date format: {row['Date_Time']}")
-                        continue
+            if df.empty:
+                self.logger.warning("Empty DataFrame provided")
+                now = datetime.now()
+                timestamp = now.strftime("%Y-%m-%d %H:00")
+                data = [
+                    {
+                        "timestamp": timestamp,
+                        **{self.sensor_map[sensor]: None for sensor in self.sensors},
+                    }
+                ]
+                return {"origen": "CENTENARIO", "data": data}
 
-                    if start_time <= dt < end_time:
-                        for sensor in self.sensors:
-                            val_str = row.get(sensor, "").strip()
-                            if val_str:
-                                try:
-                                    sensor_data[sensor].append(float(val_str))
-                                except ValueError:
-                                    self.logger.warning(
-                                        f"Invalid value for {sensor}: {val_str}"
-                                    )
+            # Ensure Date_Time column exists
+            if "Date_Time" not in df.columns:
+                raise ValueError("Column 'Date_Time' not found in WAD data")
 
-            averages = self._process_row_data(sensor_data)
+            # Ensure Date_Time is datetime type
+            if not pd.api.types.is_datetime64_dtype(df["Date_Time"]):
+                df["Date_Time"] = pd.to_datetime(
+                    df["Date_Time"], format="%Y/%m/%d %H:%M:%S", errors="coerce"
+                )
 
-            # Format the output to match the expected API format
-            data = [
-                {
-                    "timestamp": start_time.strftime("%Y-%m-%d %H:00"),
-                    **{
-                        self.sensor_map[sensor]: avg for sensor, avg in averages.items()
-                    },
-                }
-            ]
+            # Group by hour and calculate averages
+            df_hourly = (
+                df.groupby(df["Date_Time"].dt.floor("H"))
+                .mean(numeric_only=True)
+                .reset_index()
+            )
 
-            result = {"origen": "CENTENARIO", "data": data}
+            if df_hourly.empty:
+                self.logger.warning("No data available after grouping")
+                now = datetime.now()
+                timestamp = now.strftime("%Y-%m-%d %H:00")
+                data = [
+                    {
+                        "timestamp": timestamp,
+                        **{self.sensor_map[sensor]: None for sensor in self.sensors},
+                    }
+                ]
+                return {"origen": "CENTENARIO", "data": data}
+
+            # Ensure all sensor columns are numeric
+            for sensor in self.sensors:
+                if sensor in df_hourly.columns:
+                    df_hourly[sensor] = pd.to_numeric(
+                        df_hourly[sensor], errors="coerce"
+                    )
+
+            # Format timestamps to string
+            df_hourly["timestamp"] = df_hourly["Date_Time"].dt.strftime(
+                "%Y-%m-%d %H:00"
+            )
+
+            # Process the data for each hour
+            result_data = []
+            for _, row in df_hourly.iterrows():
+                hour_data = {"timestamp": row["timestamp"]}
+
+                # Add sensor data with appropriate rounding
+                for sensor in self.sensors:
+                    if sensor in row and not pd.isna(row[sensor]):
+                        value = row[sensor]
+                        if sensor in ("C1", "C2", "C3", "C4"):
+                            value = round(value, 3)
+                        elif sensor == "C6":
+                            value = round(value)
+                        else:
+                            value = round(value, 2)
+                        hour_data[self.sensor_map[sensor]] = value
+                    else:
+                        hour_data[self.sensor_map[sensor]] = None
+
+                result_data.append(hour_data)
+
+            result = {"origen": "CENTENARIO", "data": result_data}
             return result
 
         except Exception as e:
-            self.logger.error(f"Error processing data: {str(e)}")
+            self.logger.error(f"Error calculating hourly averages: {str(e)}")
             raise
 
     def _send_to_endpoint(self, data: Dict[str, Any]) -> bool:
@@ -231,73 +299,106 @@ class WinAQMSPublisher:
 
     def run(self) -> None:
         """
-        Run the publisher, checking the control file to determine the state.
+        Run the publisher, checking both internal state and control file.
         Executes once per hour if in RUNNING state.
         """
         self.logger.info("Starting WinAQMS Publisher...")
-        while True:
+        while self.state != PublisherState.STOPPED:
             try:
-                # Read control file
+                # Check the control file to sync with external commands
                 control = self._read_control_file()
-                state = control.get("winaqms_publisher", "STOPPED").upper()
+                file_state = control.get("winaqms_publisher", "STOPPED").upper()
 
-                # Check state
-                if state == "STOPPED":
-                    self.logger.info("Publisher stopped by control file.")
-                    break  # Exit loop and terminate script
-                elif state == "PAUSED":
-                    self.logger.info("Publisher paused. Waiting for state change...")
-                    time.sleep(self.check_interval)
-                    continue
-                elif state == "RUNNING":
+                # Sync internal state with control file if needed
+                if (
+                    file_state == "STOPPED"
+                    and self.state != PublisherState.STOPPING
+                    and self.state != PublisherState.STOPPED
+                ):
+                    self.logger.info("WinAQMS Publisher stopping due to control file.")
+                    self.state = PublisherState.STOPPING
+                elif file_state == "RUNNING" and self.state != PublisherState.RUNNING:
+                    self.state = PublisherState.RUNNING
+                    self.logger.info("WinAQMS Publisher resumed via control file.")
+
+                # Verify the state and take action
+                if self.state == PublisherState.STOPPING:
+                    self.logger.info("WinAQMS Publisher stopping gracefully...")
+                    self.state = PublisherState.STOPPED
+                    break
+                elif self.state == PublisherState.RUNNING:
                     # Check if an hour has passed since last execution
                     now = datetime.now()
                     if (
                         not self.last_execution
                         or (now - self.last_execution).total_seconds() >= 3600
                     ):
-                        self.logger.info("Executing publish cycle...")
+                        self.logger.info("Executing WinAQMS publish cycle...")
 
-                        # Handle hour 0 for previous day
-                        if now.hour == 0:
-                            process_date = now - timedelta(days=1)
-                            hour_to_process = 23
-                        else:
-                            process_date = now
-                            hour_to_process = now.hour - 1
-
+                        # Handle previous hour data
+                        # Process the current day's data
+                        process_date = now
+                        date = process_date.date()
+                        
+                        self.logger.info(f"Processing data for {date} (all hours)")
+                        
                         try:
-                            # Calculate hourly averages
-                            hourly_data = self._calculate_hourly_averages(
-                                process_date, hour_to_process
+                            # Read the WAD file for current day
+                            df = self._read_wad_file(process_date)
+                            
+                            # Calculate hourly averages for all hours in the file
+                            hourly_data = self._calculate_hourly_averages(df)
+                            
+                        except FileNotFoundError:
+                            self.logger.warning(
+                                f"WAD file not found for {process_date.strftime('%Y-%m-%d')}"
                             )
-
-                            # Send to API
-                            success = self._send_to_endpoint(hourly_data)
-                            if not success:
-                                self.logger.info("Failed to send data, continuing...")
-                        except FileNotFoundError as e:
-                            self.logger.info(f"{e}, continuing...")
+                            # Create empty data for the current day with hourly intervals
+                            data = []
+                            for hour in range(24):
+                                timestamp = datetime.combine(date, datetime.min.time())
+                                timestamp = timestamp + timedelta(hours=hour)
+                                data.append({
+                                    "timestamp": timestamp.strftime("%Y-%m-%d %H:00"),
+                                    **{
+                                        self.sensor_map[sensor]: None
+                                        for sensor in self.sensors
+                                    },
+                                })
+                            hourly_data = {"origen": "CENTENARIO", "data": data}
                         except Exception as e:
-                            self.logger.error(f"Error calculating hourly averages: {e}")
-
-                        # Update last execution time
+                            self.logger.error(f"Error in WinAQMS publish cycle: {e}")
+                            # Skip to next interval if there's an error
+                            time.sleep(self.check_interval)
+                            continue
+                            
+                        # At this point, hourly_data should be defined either from file or empty template
+                        # Send data to endpoint
+                        try:
+                            success = self._send_to_endpoint(hourly_data)
+                            if success:
+                                self.logger.info(
+                                    f"Successfully published data for {date} (all hours)"
+                                )
+                            else:
+                                self.logger.error(
+                                    f"Failed to publish data for {date} (all hours)"
+                                )
+                        except Exception as e:
+                            self.logger.error(f"Error sending data to endpoint: {e}")
+                            success = False
+                            
+                        # Update last execution time regardless of success
                         self.last_execution = now
-                    else:
-                        time.sleep(self.check_interval)
-                else:
-                    self.logger.info(
-                        f"Unknown state for publisher: {state}. Defaulting to PAUSED."
-                    )
-                    time.sleep(self.check_interval)
-                    continue
 
-                # Wait before checking control file again
-                time.sleep(self.check_interval)
+                    # Sleep until next check
+                    time.sleep(self.check_interval)
 
             except Exception as e:
-                self.logger.error(f"Error in publisher run loop: {e}")
+                self.logger.error(f"Error in WinAQMS Publisher run loop: {e}")
                 time.sleep(self.check_interval)
+
+        self.logger.info("WinAQMS Publisher stopped")
 
 
 def main():
