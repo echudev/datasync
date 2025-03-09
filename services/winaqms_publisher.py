@@ -49,7 +49,6 @@ class WinAQMSPublisher:
         """
         load_dotenv()
         self.wad_dir = wad_dir
-        # Use None for clarity instead of relying on falsy value
         self.endpoint_url = (
             endpoint_url if endpoint_url is not None else os.getenv("GOOGLE_POST_URL")
         )
@@ -60,9 +59,8 @@ class WinAQMSPublisher:
         self.control_file = control_file
         self.check_interval = check_interval
         self.last_execution = None
-        self.state = PublisherState.RUNNING
         self.logger = logger or logging.getLogger("winaqms_publisher")
-        self._setup_logger()
+        self.state = PublisherState.RUNNING
 
         # WinAQMS sensor configuration
         self.sensors = ["C1", "C2", "C3", "C4", "C5", "C6"]
@@ -75,62 +73,22 @@ class WinAQMSPublisher:
             "C6": "PM10",
         }
 
-    def _setup_logger(self) -> None:
-        """Setup the logger if it's not already configured."""
-        if not self.logger.handlers:
-            handler = logging.StreamHandler()
-            formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
-            handler.setFormatter(formatter)
-            self.logger.addHandler(handler)
-            self.logger.setLevel(logging.INFO)
+    def update_state(self, new_state: str) -> None:
+        """Update state and control file when changed by user."""
+        state_value = new_state.upper()
+        if state_value == "STOPPED":
+            self.state = PublisherState.STOPPED
+        elif state_value == "RUNNING":
+            self.state = PublisherState.RUNNING
 
-    def _read_control_file(self) -> Dict[str, Any]:
-        """
-        Read the control file to determine the state of the publisher.
-
-        Returns:
-            Dict[str, Any]: Dictionary with control state (e.g., {"publisher": "RUNNING"}).
-
-        Raises:
-            FileNotFoundError: If the control file doesn't exist.
-            json.JSONDecodeError: If the control file is not valid JSON.
-        """
-        try:
-            with open(self.control_file, "r") as f:
-                control = json.load(f)
-            return control
-        except FileNotFoundError:
-            self.logger.error(
-                f"Control file {self.control_file} not found. Defaulting to STOPPED."
-            )
-            return {"winaqms_publisher": "STOPPED"}
-        except json.JSONDecodeError as e:
-            self.logger.error(f"Error decoding control file {self.control_file}: {e}")
-            return {"winaqms_publisher": "STOPPED", "publisher": "STOPPED"}
-
-    def _get_wad_path(self, process_date: datetime) -> str:
-        """
-        Get the WAD file path for the given date.
-
-        Args:
-            process_date (datetime): The date to process.
-
-        Returns:
-            str: Path to the WAD file.
-        """
-        year_str = process_date.strftime("%Y")
-        month_str = process_date.strftime("%m")
-        day_str = process_date.strftime("%d")
-        folder_path = os.path.join(self.wad_dir, year_str, month_str)
-        wad_file = f"eco{year_str}{month_str}{day_str}.wad"
-        return os.path.join(folder_path, wad_file)
-
-    def _read_wad_file(self, date: datetime) -> pd.DataFrame:
+    def _read_wad_file(self, year: str, month: str, day: str) -> pd.DataFrame:
         """
         Read the WAD file for the given date.
 
         Args:
-            date (datetime): The date to process.
+            year (str): Year to process.
+            month (str): Month to process.
+            day (str): Day to process.
 
         Returns:
             pd.DataFrame: DataFrame with the WAD data.
@@ -140,7 +98,9 @@ class WinAQMSPublisher:
             Exception: For other read errors.
         """
         try:
-            wad_path = self._get_wad_path(date)
+            wad_folder = os.path.join(self.wad_dir, year, month)
+            wad_file = f"eco{year}{month}{day}.wad"
+            wad_path = os.path.join(wad_folder, wad_file)
             if not os.path.exists(wad_path):
                 raise FileNotFoundError(f"WAD file not found: {wad_path}")
 
@@ -296,7 +256,7 @@ class WinAQMSPublisher:
                 data=json.dumps(data),
             )
             response.raise_for_status()
-            self.logger.info(f"Data sent successfully: {response.text}")
+            self.logger.info(f"WinAqms data sent successfully: {response.text}")
             return True
         except requests.exceptions.RequestException as e:
             self.logger.error(f"Error sending data to endpoint: {e}")
@@ -304,121 +264,50 @@ class WinAQMSPublisher:
 
     def run(self) -> None:
         """
-        Run the publisher, checking both internal state and control file.
-        Executes once per hour if in RUNNING state.
+        Run the publisher, executing at :05 of each hour.
+        First execution happens immediately, then waits for next :05 mark.
         """
-        self.logger.info("Starting WinAQMS Publisher...")
-        force_continue = False
-        while self.state != PublisherState.STOPPED or force_continue:
+        self.logger.info("Starting WinAQMS publisher...")
+        first_run = True
+
+        while self.state != PublisherState.STOPPED:
             try:
-                # Check the control file to sync with external commands
-                control = self._read_control_file()
-                file_state = control.get("winaqms_publisher", "STOPPED").upper()
+                now = datetime.now()
 
-                # If we're in a forced continuation to check for state changes,
-                # reset the flag after checking the control file
-                if force_continue:
-                    force_continue = False
-
-                # Sync internal state with control file if needed
-                if (
-                    file_state == "STOPPED"
-                    and self.state != PublisherState.STOPPING
-                    and self.state != PublisherState.STOPPED
-                ):
-                    self.logger.info("WinAQMS Publisher stopping due to control file.")
-                    self.state = PublisherState.STOPPING
-                elif file_state == "RUNNING" and self.state != PublisherState.RUNNING:
-                    self.state = PublisherState.RUNNING
-                    self.logger.info("WinAQMS Publisher resumed via control file.")
-                    # Set force_continue to true to ensure we don't exit the loop immediately
-                    # when transitioning from STOPPED to RUNNING
-                    force_continue = True
-
-                # Verify the state and take action
-                if self.state == PublisherState.STOPPING:
-                    self.logger.info("WinAQMS Publisher stopping gracefully...")
-                    self.state = PublisherState.STOPPED
-                    # Don't break here, let the loop continue one more time to allow checking
-                    # for potential state changes from the control file
-                    force_continue = True
-                elif self.state == PublisherState.RUNNING:
-                    # Check if an hour has passed since last execution
-                    now = datetime.now()
-                    if (
-                        not self.last_execution
-                        or (now - self.last_execution).total_seconds() >= 3600
-                    ):
-                        self.logger.info("Executing WinAQMS publish cycle...")
-
-                        # Handle previous hour data
-                        # Process the current day's data
-                        process_date = now
-                        date = process_date.date()
-
-                        self.logger.info(f"Processing data for {date} (all hours)")
-
-                        try:
-                            # Read the WAD file for current day
-                            df = self._read_wad_file(process_date)
-
-                            # Calculate hourly averages for all hours in the file
-                            hourly_data = self._calculate_hourly_averages(df)
-
-                        except FileNotFoundError:
-                            self.logger.warning(
-                                f"WAD file not found for {process_date.strftime('%Y-%m-%d')}"
-                            )
-                            # Create empty data for the current day with hourly intervals
-                            data = []
-                            for hour in range(24):
-                                timestamp = datetime.combine(date, datetime.min.time())
-                                timestamp = timestamp + timedelta(hours=hour)
-                                data.append(
-                                    {
-                                        "timestamp": timestamp.strftime(
-                                            "%Y-%m-%d %H:00"
-                                        ),
-                                        **{
-                                            self.sensor_map[sensor]: None
-                                            for sensor in self.sensors
-                                        },
-                                    }
-                                )
-                            hourly_data = {"origen": "CENTENARIO", "data": data}
-                        except Exception as e:
-                            self.logger.error(f"Error in WinAQMS publish cycle: {e}")
-                            # Skip to next interval if there's an error
-                            time.sleep(self.check_interval)
-                            continue
-
-                        # At this point, hourly_data should be defined either from file or empty template
-                        # Send data to endpoint
-                        try:
-                            success = self._send_to_endpoint(hourly_data)
-                            if success:
-                                self.logger.info(
-                                    f"Successfully published data for {date} (all hours)"
-                                )
-                            else:
-                                self.logger.error(
-                                    f"Failed to publish data for {date} (all hours)"
-                                )
-                        except Exception as e:
-                            self.logger.error(f"Error sending data to endpoint: {e}")
-                            success = False
-
-                        # Update last execution time regardless of success
+                if self.state == PublisherState.RUNNING:
+                    if first_run:
+                        self._execute_publish_cycle()
+                        first_run = False
                         self.last_execution = now
+                    else:
+                        current_hour = now.replace(minute=5, second=0, microsecond=0)
+                        if now >= current_hour and (
+                            not self.last_execution
+                            or self.last_execution.hour != now.hour
+                        ):
+                            self._execute_publish_cycle()
+                            self.last_execution = now
 
-                    # Sleep until next check
-                    time.sleep(self.check_interval)
-
-            except Exception as e:
-                self.logger.error(f"Error in WinAQMS Publisher run loop: {e}")
                 time.sleep(self.check_interval)
 
-        self.logger.info("WinAQMS Publisher stopped")
+            except Exception as e:
+                self.logger.error(f"Error in publisher run loop: {e}")
+                time.sleep(self.check_interval)
+
+    def _execute_publish_cycle(self) -> None:
+        """Helper method to execute one publish cycle."""
+        self.logger.info("Executing winaqms publish cycle...")
+        now = datetime.now()
+        year, month, day = now.strftime("%Y"), now.strftime("%m"), now.strftime("%d")
+
+        try:
+            df = self._read_wad_file(year, month, day)
+            hourly_data = self._calculate_hourly_averages(df)
+            success = self._send_to_endpoint(hourly_data)
+            if not success:
+                self.logger.info("Failed to send WinAQMS data, continuing...")
+        except Exception as e:
+            self.logger.error(f"Error during publish cycle: {e}")
 
 
 def main():
