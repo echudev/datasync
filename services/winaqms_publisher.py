@@ -280,7 +280,7 @@ class WinAQMSPublisher:
                         first_run = False
                         self.last_execution = now
                     else:
-                        current_hour = now.replace(minute=5, second=0, microsecond=0)
+                        current_hour = now.replace(minute=4, second=0, microsecond=0)
                         if now >= current_hour and (
                             not self.last_execution
                             or self.last_execution.hour != now.hour
