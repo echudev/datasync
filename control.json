@@ -1,5 +1,5 @@
 {
-    "data_collector": "RUNNING",
-    "publisher": "RUNNING",
-    "winaqms_publisher": "RUNNING"
+    "data_collector": "STOPPED",
+    "publisher": "STOPPED",
+    "winaqms_publisher": "STOPPED"
 }

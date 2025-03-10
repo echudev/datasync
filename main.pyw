@@ -3,6 +3,7 @@ Data Collection System
 
 Main entry point for the data collection system with a Tkinter GUI to control
 DataCollector and Publisher services using a control file.
+This version (.pyw) runs without showing a console window.
 """
 
 import os
@@ -33,12 +34,16 @@ log_dir = "logs"
 if not os.path.exists(log_dir):
     os.makedirs(log_dir)
 
+# Crear la carpeta 'assets' si no existe
+assets_dir = "assets"
+if not os.path.exists(assets_dir):
+    os.makedirs(assets_dir)
+
 # Configure logging (centralizado para todos los módulos)
 logging.basicConfig(
     level=logging.INFO,  # Nivel INFO para eventos clave y errores
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     handlers=[
-        logging.StreamHandler(),
         logging.FileHandler(os.path.join(log_dir, "data_collection.log")),
     ],
 )
@@ -260,4 +265,4 @@ if __name__ == "__main__":
         logger.info("Program interrupted by user")
     except Exception as e:
         logger.error(f"Unhandled exception: {e}", exc_info=True)
-        sys.exit(1)
+        sys.exit(1) 
