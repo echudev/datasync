@@ -174,7 +174,7 @@ class WinAQMSPublisher:
                         **{self.sensor_map[sensor]: None for sensor in self.sensors},
                     }
                 ]
-                return {"origen": "CENTENARIO", "data": data}
+                return {"apiKey": self.apiKey, "origen": "CENTENARIO", "data": data}
 
             # Ensure Date_Time column exists
             if "Date_Time" not in df.columns:
