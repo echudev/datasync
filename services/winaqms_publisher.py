@@ -33,6 +33,8 @@ class WinAQMSPublisher:
         self,
         wad_dir: str = "C:\\Data",
         endpoint_url: str = None,
+        origen: str = None,
+        apiKey: str = None,
         control_file: str = "control.json",
         check_interval: int = 5,
         logger: Optional[logging.Logger] = None,
@@ -56,6 +58,12 @@ class WinAQMSPublisher:
             raise ValueError(
                 "Endpoint URL must be provided or set in .env as GOOGLE_POST_URL"
             )
+        self.origen = origen or os.getenv("ORIGEN")
+        if not self.origen:
+            raise ValueError("Origen must be provided or set in .env as ORIGEN")
+        self.apiKey = apiKey or os.getenv("API_KEY")
+        if not self.apiKey:
+            raise ValueError("API Key must be provided or set in .env as API_KEY")
         self.control_file = control_file
         self.check_interval = check_interval
         self.last_execution = None
@@ -232,7 +240,7 @@ class WinAQMSPublisher:
 
                 result_data.append(hour_data)
 
-            result = {"origen": "CENTENARIO", "data": result_data}
+            result = {"apiKey": self.apiKey, "origen": self.origen, "data": result_data}
             return result
 
         except Exception as e:

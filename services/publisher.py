@@ -30,6 +30,8 @@ class CSVPublisher:
         self,
         csv_dir: str = "data",
         endpoint_url: str = None,
+        origen: str = None,
+        apiKey: str = None,
         check_interval: int = 5,
         logger: Optional[
             logging.Logger
@@ -52,6 +54,12 @@ class CSVPublisher:
             raise ValueError(
                 "Endpoint URL must be provided or set in .env as GOOGLE_POST_URL"
             )
+        self.origen = origen or os.getenv("ORIGEN")
+        if not self.origen:
+            raise ValueError("Origen must be provided or set in .env as ORIGEN")
+        self.apiKey = apiKey or os.getenv("API_KEY")
+        if not self.apiKey:
+            raise ValueError("API Key must be provided or set in .env as API_KEY")
         self.check_interval = check_interval
         self.last_execution = None
         self.logger = logger or logging.getLogger("publisher")
@@ -157,7 +165,7 @@ class CSVPublisher:
                             new_record[new_key] = round(float(value), 1)
                 new_data.append(new_record)
 
-            result = {"origen": "CENTENARIO", "data": new_data}
+            result = {"apiKey": self.apiKey, "origen": self.origen, "data": new_data}
             return result
         except Exception as e:
             self.logger.error(f"Error calculating hourly averages: {e}")
