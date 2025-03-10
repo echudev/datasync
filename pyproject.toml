@@ -7,7 +7,9 @@ requires-python = ">=3.12"
 dependencies = [
     "aiohttp>=3.11.13",
     "pandas>=2.2.3",
+    "pillow>=11.1.0",
     "pyserial>=3.5",
+    "pystray>=0.19.5",
     "pytest>=8.3.5",
     "pytest-asyncio>=0.25.3",
     "pytest-mock>=3.14.0",
