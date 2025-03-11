@@ -35,7 +35,6 @@ class WinAQMSPublisher:
         endpoint_url: str = None,
         origen: str = None,
         apiKey: str = None,
-        control_file: str = "control.json",
         check_interval: int = 5,
         logger: Optional[logging.Logger] = None,
     ):
@@ -51,10 +50,8 @@ class WinAQMSPublisher:
         """
         load_dotenv()
         self.wad_dir = wad_dir
-        self.endpoint_url = (
-            endpoint_url if endpoint_url is not None else os.getenv("GOOGLE_POST_URL")
-        )
-        if self.endpoint_url is None:
+        self.endpoint_url = endpoint_url or os.getenv("GOOGLE_POST_URL")
+        if not self.endpoint_url:
             raise ValueError(
                 "Endpoint URL must be provided or set in .env as GOOGLE_POST_URL"
             )
@@ -64,7 +61,6 @@ class WinAQMSPublisher:
         self.apiKey = apiKey or os.getenv("API_KEY")
         if not self.apiKey:
             raise ValueError("API Key must be provided or set in .env as API_KEY")
-        self.control_file = control_file
         self.check_interval = check_interval
         self.last_execution = None
         self.logger = logger or logging.getLogger("winaqms_publisher")
