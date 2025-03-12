@@ -7,11 +7,10 @@ controlled by a control file.
 """
 
 import os
-import json
-import time
+import asyncio
 import logging
 from datetime import datetime, timedelta
-import requests
+import aiohttp
 from dotenv import load_dotenv
 from enum import Enum
 import pandas as pd
@@ -44,7 +43,6 @@ class WinAQMSPublisher:
         Args:
             wad_dir (str): Directory containing the WAD files (default: "C:\Data").
             endpoint_url (str): URL of the API endpoint (loaded from env if None).
-            control_file (str): Path to the control file (default: "control.json").
             check_interval (int): Interval in seconds to check the control file (default: 5).
             logger: Logger instance (optional).
         """
@@ -78,14 +76,14 @@ class WinAQMSPublisher:
         }
 
     def update_state(self, new_state: str) -> None:
-        """Update state and control file when changed by user."""
+        """Update state when changed by user."""
         state_value = new_state.upper()
         if state_value == "STOPPED":
             self.state = PublisherState.STOPPED
         elif state_value == "RUNNING":
             self.state = PublisherState.RUNNING
 
-    def _read_wad_file(self, year: str, month: str, day: str) -> pd.DataFrame:
+    async def _read_wad_file(self, year: str, month: str, day: str) -> pd.DataFrame:
         """
         Read the WAD file for the given date.
 
@@ -108,8 +106,8 @@ class WinAQMSPublisher:
             if not os.path.exists(wad_path):
                 raise FileNotFoundError(f"WAD file not found: {wad_path}")
 
-            # Read WAD file as CSV with pandas
-            df = pd.read_csv(wad_path)
+            # Use asyncio.to_thread for file reading to avoid blocking
+            df = await asyncio.to_thread(pd.read_csv, wad_path)
 
             # Convert Date_Time column to datetime
             df["Date_Time"] = pd.to_datetime(
@@ -243,9 +241,9 @@ class WinAQMSPublisher:
             self.logger.error(f"Error calculating hourly averages: {str(e)}")
             raise
 
-    def _send_to_endpoint(self, data: Dict[str, Any]) -> bool:
+    async def _send_to_endpoint(self, data: Dict[str, Any]) -> bool:
         """
-        Send data to the external endpoint.
+        Send data to the external endpoint asynchronously.
 
         Args:
             data (Dict[str, Any]): Data to send in JSON format.
@@ -254,21 +252,23 @@ class WinAQMSPublisher:
             bool: True if successful, False otherwise.
         """
         try:
-            response = requests.post(
-                self.endpoint_url,
-                headers={"Content-Type": "application/json"},
-                data=json.dumps(data),
-            )
-            response.raise_for_status()
-            self.logger.info(f"WinAqms data sent successfully: {response.text}")
-            return True
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    self.endpoint_url,
+                    headers={"Content-Type": "application/json"},
+                    json=data,
+                ) as response:
+                    await response.text()
+                    response.raise_for_status()
+                    self.logger.info("WinAqms data sent successfully")
+                    return True
         except Exception as e:
             self.logger.error(f"Error sending data to endpoint: {e}")
             return False
 
-    def run(self) -> None:
+    async def run(self) -> None:
         """
-        Run the publisher, executing at :05 of each hour.
+        Run the publisher asynchronously, executing at :05 of each hour.
         First execution happens immediately, then waits for next :05 mark.
         """
         self.logger.info("Starting WinAQMS publisher...")
@@ -280,7 +280,7 @@ class WinAQMSPublisher:
 
                 if self.state == PublisherState.RUNNING:
                     if first_run:
-                        self._execute_publish_cycle()
+                        await self._execute_publish_cycle()
                         first_run = False
                         self.last_execution = now
                     else:
@@ -289,37 +289,37 @@ class WinAQMSPublisher:
                             not self.last_execution
                             or self.last_execution.hour != now.hour
                         ):
-                            self._execute_publish_cycle()
+                            await self._execute_publish_cycle()
                             self.last_execution = now
 
-                time.sleep(self.check_interval)
+                await asyncio.sleep(self.check_interval)
 
             except Exception as e:
                 self.logger.error(f"Error in publisher run loop: {e}")
-                time.sleep(self.check_interval)
+                await asyncio.sleep(self.check_interval)
 
-    def _execute_publish_cycle(self) -> None:
-        """Helper method to execute one publish cycle."""
+    async def _execute_publish_cycle(self) -> None:
+        """Helper method to execute one publish cycle asynchronously."""
         self.logger.info("Executing winaqms publish cycle...")
         now = datetime.now()
         year, month, day = now.strftime("%Y"), now.strftime("%m"), now.strftime("%d")
 
         try:
-            df = self._read_wad_file(year, month, day)
+            df = await self._read_wad_file(year, month, day)
             hourly_data = self._calculate_hourly_averages(df)
-            success = self._send_to_endpoint(hourly_data)
+            success = await self._send_to_endpoint(hourly_data)
             if not success:
                 self.logger.info("Failed to send WinAQMS data, continuing...")
         except Exception as e:
             self.logger.error(f"Error during publish cycle: {e}")
 
 
-def main():
+async def main():
     """Main function to start the publisher."""
     try:
         logger = logging.getLogger("data_collection")  # Use shared logger
         publisher = WinAQMSPublisher(logger=logger)
-        publisher.run()
+        await publisher.run()
     except KeyboardInterrupt:
         logger.info("WinAQMS Publisher stopped by user")
     except Exception as e:
@@ -327,4 +327,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

@@ -6,13 +6,12 @@ calculates hourly averages, and sends them to a specified API endpoint, controll
 """
 
 import os
-import json
-import time
+import asyncio
 import logging
 from datetime import datetime
 from enum import Enum
 import pandas as pd
-import requests
+import aiohttp
 from dotenv import load_dotenv
 from typing import Dict, Any, Optional
 
@@ -33,9 +32,7 @@ class CSVPublisher:
         origen: str = None,
         apiKey: str = None,
         check_interval: int = 5,
-        logger: Optional[
-            logging.Logger
-        ] = None,  # Logger opcional para usar el compartido
+        logger: Optional[logging.Logger] = None,
     ):
         """
         Initialize the CSVPublisher.
@@ -43,9 +40,8 @@ class CSVPublisher:
         Args:
             csv_dir (str): Directory containing the CSV files (default: "data").
             endpoint_url (str): URL of the API endpoint (loaded from env if None).
-            control_file (str): Path to the control file (default: "control.json").
             check_interval (int): Interval in seconds to check the control file (default: 5).
-            logger: Logger instance (si se pasa, se usa; de lo contrario, se crea uno local).
+            logger: Logger instance (optional).
         """
         load_dotenv()
         self.csv_dir = csv_dir
@@ -66,14 +62,14 @@ class CSVPublisher:
         self.state = PublisherState.RUNNING
 
     def update_state(self, new_state: str) -> None:
-        """Update state and control file when changed by user."""
+        """Update state when changed by user."""
         state_value = new_state.upper()
         if state_value == "STOPPED":
             self.state = PublisherState.STOPPED
         elif state_value == "RUNNING":
             self.state = PublisherState.RUNNING
 
-    def _read_csv(self, year: str, month: str, day: str) -> pd.DataFrame:
+    async def _read_csv(self, year: str, month: str, day: str) -> pd.DataFrame:
         """
         Read the daily CSV file for the given date.
 
@@ -93,7 +89,9 @@ class CSVPublisher:
             csv_path = os.path.join(self.csv_dir, year, month, f"{day}.csv")
             if not os.path.exists(csv_path):
                 raise FileNotFoundError(f"CSV file not found: {csv_path}")
-            df = pd.read_csv(csv_path)
+
+            # Use asyncio.to_thread for file reading to avoid blocking
+            df = await asyncio.to_thread(pd.read_csv, csv_path)
             return df
         except Exception as e:
             self.logger.error(f"Error reading CSV file: {e}")
@@ -171,9 +169,9 @@ class CSVPublisher:
             self.logger.error(f"Error calculating hourly averages: {e}")
             raise
 
-    def _send_to_endpoint(self, data: Dict[str, Any]) -> bool:
+    async def _send_to_endpoint(self, data: Dict[str, Any]) -> bool:
         """
-        Send data to the external endpoint synchronously.
+        Send data to the external endpoint asynchronously.
 
         Args:
             data (Dict[str, Any]): Data to send in JSON format.
@@ -182,21 +180,23 @@ class CSVPublisher:
             bool: True if successful, False otherwise.
         """
         try:
-            response = requests.post(
-                self.endpoint_url,
-                headers={"Content-Type": "application/json"},
-                data=json.dumps(data),
-            )
-            response.raise_for_status()
-            self.logger.info(f"Data sent successfully: {response.text}")
-            return True
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    self.endpoint_url,
+                    headers={"Content-Type": "application/json"},
+                    json=data,
+                ) as response:
+                    await response.text()
+                    response.raise_for_status()
+                    self.logger.info("Data sent successfully")
+                    return True
         except Exception as e:
             self.logger.error(f"Error sending data to endpoint: {e}")
             return False
 
-    def run(self) -> None:
+    async def run(self) -> None:
         """
-        Run the publisher, executing at :05 of each hour.
+        Run the publisher asynchronously, executing at :05 of each hour.
         First execution happens immediately, then waits for next :05 mark.
         """
         self.logger.info("Starting Publisher...")
@@ -208,7 +208,7 @@ class CSVPublisher:
 
                 if self.state == PublisherState.RUNNING:
                     if first_run:
-                        self._execute_publish_cycle()
+                        await self._execute_publish_cycle()
                         first_run = False
                         self.last_execution = now
                     else:
@@ -217,25 +217,25 @@ class CSVPublisher:
                             not self.last_execution
                             or self.last_execution.hour != now.hour
                         ):
-                            self._execute_publish_cycle()
+                            await self._execute_publish_cycle()
                             self.last_execution = now
 
-                time.sleep(self.check_interval)
+                await asyncio.sleep(self.check_interval)
 
             except Exception as e:
                 self.logger.error(f"Error in publisher run loop: {e}")
-                time.sleep(self.check_interval)
+                await asyncio.sleep(self.check_interval)
 
-    def _execute_publish_cycle(self) -> None:
-        """Helper method to execute one publish cycle."""
+    async def _execute_publish_cycle(self) -> None:
+        """Helper method to execute one publish cycle asynchronously."""
         self.logger.info("Executing publish cycle...")
         now = datetime.now()
         year, month, day = now.strftime("%Y"), now.strftime("%m"), now.strftime("%d")
 
         try:
-            df = self._read_csv(year, month, day)
+            df = await self._read_csv(year, month, day)
             hourly_data = self._calculate_hourly_averages(df)
-            success = self._send_to_endpoint(hourly_data)
+            success = await self._send_to_endpoint(hourly_data)
             if not success:
                 self.logger.info("Failed to send data, continuing...")
         except Exception as e:
@@ -247,7 +247,7 @@ def main():
     try:
         logger = logging.getLogger("data_collection")  # Usar el logger compartido
         publisher = CSVPublisher(logger=logger)
-        publisher.run()
+        asyncio.run(publisher.run())
     except KeyboardInterrupt:
         logger.info("Publisher stopped by user")
     except Exception as e:

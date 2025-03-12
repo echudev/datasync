@@ -12,7 +12,6 @@ import logging
 import signal
 import sys
 import platform
-import threading
 from pathlib import Path
 from typing import List, TypedDict
 
@@ -83,7 +82,9 @@ async def main() -> None:
         }
 
         # Crear instancias de sensores
-        sensors: List[Sensor] = [sensor_classes[cfg["name"]]() for cfg in sensors_config]
+        sensors: List[Sensor] = [
+            sensor_classes[cfg["name"]]() for cfg in sensors_config
+        ]
 
         # Configurar columnas
         columns = ["timestamp"]
@@ -94,15 +95,9 @@ async def main() -> None:
         async with DataCollector(output_path=Path("data"), logger=logger) as collector:
             collector.set_columns(columns)
 
-            # Iniciar publisher en un hilo separado
-            publisher = CSVPublisher(logger=logger)  # Pasar el logger compartido
-            publisher_thread = None
-
-            # Iniciar winaqms_publisher en un hilo separado
-            winaqms_publisher = WinAQMSPublisher(
-                logger=logger
-            )  # Pasar el logger compartido
-            winaqms_publisher_thread = None
+            # Inicializar publishers
+            publisher = CSVPublisher(logger=logger)
+            winaqms_publisher = WinAQMSPublisher(logger=logger)
 
             # Escribir estado inicial en control.json
             with open("control.json", "w") as f:
@@ -116,24 +111,19 @@ async def main() -> None:
                     indent=4,
                 )
 
-            # Iniciar el hilo de publisher si está en estado RUNNING
+            # Iniciar publishers si están en estado RUNNING
+            publisher_task = None
+            winaqms_publisher_task = None
+
             with open("control.json", "r") as f:
                 control = json.load(f)
+
             if control.get("publisher", "STOPPED").upper() == "RUNNING":
-                publisher_thread = threading.Thread(target=publisher.run)
-                publisher_thread.daemon = True  # El hilo se detendrá al cerrar el programa
-                publisher_thread.start()
+                publisher_task = asyncio.create_task(publisher.run())
                 logger.info("Publisher started")
 
-            # Iniciar el hilo de winaqms_publisher si está en estado RUNNING
-            with open("control.json", "r") as f:
-                control = json.load(f)
             if control.get("winaqms_publisher", "STOPPED").upper() == "RUNNING":
-                winaqms_publisher_thread = threading.Thread(target=winaqms_publisher.run)
-                winaqms_publisher_thread.daemon = (
-                    True  # El hilo se detendrá al cerrar el programa
-                )
-                winaqms_publisher_thread.start()
+                winaqms_publisher_task = asyncio.create_task(winaqms_publisher.run())
                 logger.info("WinAQMS Publisher started")
 
             # Manejo de señales para Windows
@@ -150,11 +140,13 @@ async def main() -> None:
             else:
                 # Manejo de señales para Unix
                 def handle_shutdown():
-                    asyncio.create_task(shutdown(collector, publisher, winaqms_publisher))
+                    asyncio.create_task(
+                        shutdown(collector, publisher, winaqms_publisher)
+                    )
 
                 for sig in (signal.SIGINT, signal.SIGTERM):
                     signal.signal(sig, lambda signum, frame: handle_shutdown())
-            
+
             # Tareas de colección
             collection_tasks = [
                 asyncio.create_task(collector.collect_data(sensor, config))
@@ -165,38 +157,31 @@ async def main() -> None:
             )
 
             # Crear y correr la ventana de Tkinter usando módulo UI
-            window = create_app(
-                collector,
-                publisher,
-                winaqms_publisher,
-                publisher_thread,
-                collection_tasks + [processing_task],
-            )
-            
+            window = create_app(collector, publisher, winaqms_publisher)
+
             # Ejecutar la aplicación
             ui_task = asyncio.create_task(
-                run_app(
-                    window,
-                    collector,
-                    publisher,
-                    winaqms_publisher,
-                    publisher_thread,
-                    collection_tasks + [processing_task],
-                )
+                run_app(window, collector, publisher, winaqms_publisher)
             )
 
             try:
                 # Esperar a que terminen las tareas
                 await asyncio.gather(ui_task)
-                
-                # Cancelar las tareas de colección cuando la UI termina
+
+                # Cancelar las tareas cuando la UI termina
                 for task in collection_tasks + [processing_task]:
                     if not task.done():
                         task.cancel()
-                
+
+                if publisher_task and not publisher_task.done():
+                    publisher_task.cancel()
+
+                if winaqms_publisher_task and not winaqms_publisher_task.done():
+                    winaqms_publisher_task.cancel()
+
                 # Esperar a que las tareas se cancelen
                 await asyncio.sleep(1)
-                
+
             except asyncio.CancelledError:
                 logger.info("Main task canceled")
             except Exception as e:
@@ -224,13 +209,11 @@ async def shutdown(
             collector.state = CollectorState.STOPPED
 
         if publisher:
-            if hasattr(publisher, "state"):  # Check if publisher has state attribute
+            if hasattr(publisher, "state"):
                 publisher.state = PublisherState.STOPPED
 
         if winaqms_publisher:
-            if hasattr(
-                winaqms_publisher, "state"
-            ):  # Check if winaqms_publisher has state attribute
+            if hasattr(winaqms_publisher, "state"):
                 winaqms_publisher.state = PublisherState.STOPPED
 
         # 2. Update control.json for persistence and external control
