@@ -89,7 +89,7 @@ def create_app(collector, publisher, winaqms_publisher):
     notebook.add(logs_tab, text="Logs")
 
     # Función para salir de la aplicación
-    def exit_application():
+    async def exit_application():
         logger.info("Exit button clicked, shutting down application")
 
         # Detener el ícono si existe
@@ -102,7 +102,7 @@ def create_app(collector, publisher, winaqms_publisher):
 
         # Detener los servicios
         try:
-            asyncio.run(shutdown(collector, publisher, winaqms_publisher))
+            await shutdown(collector, publisher, winaqms_publisher)
         except Exception as e:
             logger.error(f"Error shutting down services: {e}")
 
@@ -114,7 +114,7 @@ def create_app(collector, publisher, winaqms_publisher):
     button_frame.pack(pady=5, fill=tk.X)
 
     # Agregar botón de salir
-    exit_button = ttk.Button(button_frame, text="Salir", command=exit_application)
+    exit_button = ttk.Button(button_frame, text="Salir", command=lambda: asyncio.create_task(exit_application()))
     exit_button.pack(side=tk.RIGHT, padx=10, pady=5)
 
     # Configurar el comportamiento al cerrar la ventana
@@ -385,16 +385,16 @@ async def update_ui(
             ttk.Button(
                 service_frame,
                 text="Iniciar",
-                command=lambda s=service: update_control(
-                    s, "RUNNING", collector, publisher, winaqms_publisher
+                command=lambda s=service: asyncio.create_task(
+                    update_control(s, "RUNNING", collector, publisher, winaqms_publisher)
                 ),
             ).grid(row=0, column=2, padx=5)
 
             ttk.Button(
                 service_frame,
                 text="Detener",
-                command=lambda s=service: update_control(
-                    s, "STOPPED", collector, publisher, winaqms_publisher
+                command=lambda s=service: asyncio.create_task(
+                    update_control(s, "STOPPED", collector, publisher, winaqms_publisher)
                 ),
             ).grid(row=0, column=3, padx=5)
         except Exception as e:
@@ -580,7 +580,7 @@ async def update_ui(
         await asyncio.sleep(2)  # Actualizar cada 2 segundos
 
 
-def update_control(service, state, collector, publisher, winaqms_publisher):
+async def update_control(service, state, collector, publisher, winaqms_publisher):
     """
     Update the control state of a service.
 

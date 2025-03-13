@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Dict, List, Any, TypedDict
+from typing import Dict, List, Any, TypedDict, Optional
 
 import pandas as pd
 from tenacity import retry, stop_after_attempt, wait_fixed
@@ -59,17 +59,15 @@ class Sensor(ABC):
 class DataCollector:
     """Handles collection and processing of sensor data."""
 
-    def __init__(self, output_path: Path, logger: logging.Logger) -> None:
-        """Initialize with dependencies."""
+    def __init__(self, output_path: Path, logger: Optional[logging.Logger] = None):
         self.output_path = output_path
-        self.logger = logger
-        self.data_buffer: Dict[str, BufferEntry] = defaultdict(
-            lambda: {"data": {}, "count": 0}
-        )
-        self.data_lock = asyncio.Lock()
+        self.logger = logger or logging.getLogger("data_collector")
         self.state = CollectorState.RUNNING
-        self.csv_columns: List[str] = ["timestamp"]
-        self.data_to_save: List[Dict[str, Any]] = []
+        self.data_buffer = defaultdict(lambda: {"data": defaultdict(float), "count": 0})
+        self.data_to_save = []
+        self.csv_columns = []
+        self.data_lock = asyncio.Lock()
+        self.state_lock = asyncio.Lock()
 
     async def __aenter__(self):
         """Async context manager entry."""
@@ -85,6 +83,16 @@ class DataCollector:
             await self._save_batch_data(self.data_to_save)
         self.logger.info("DataCollector shut down")
 
+    async def set_state(self, new_state: CollectorState) -> None:
+        """Thread-safe state update."""
+        async with self.state_lock:
+            self.state = new_state
+
+    async def get_state(self) -> CollectorState:
+        """Thread-safe state retrieval."""
+        async with self.state_lock:
+            return self.state
+
     async def collect_data(self, sensor: Sensor, sensor_config: SensorConfig) -> None:
         """Collect data from a sensor at regular intervals."""
         required = {"name", "keys", "scan_interval"}
@@ -96,7 +104,7 @@ class DataCollector:
 
         self.logger.info(f"Starting data collection for sensor {name}")
         try:
-            while self.state == CollectorState.RUNNING:
+            while await self.get_state() == CollectorState.RUNNING:
                 start_time = datetime.now()
                 timestamp_key = start_time.strftime("%Y-%m-%d %H:%M")
 
@@ -125,7 +133,7 @@ class DataCollector:
         """Process collected data and save in batches, forcing save at hour boundaries."""
         self.logger.info("Starting data processing task")
         try:
-            while self.state == CollectorState.RUNNING:
+            while await self.get_state() == CollectorState.RUNNING:
                 await asyncio.sleep(output_interval)
 
                 now = datetime.now()

@@ -303,8 +303,8 @@ class DavisVantagePro2(Sensor):
     async def read(self) -> Dict[str, float]:
         try:
             if not self.serial_conn or not self.serial_conn.is_open:
-                await asyncio.get_event_loop().run_in_executor(None, self.connect)
-            loop = asyncio.get_event_loop()
+                await asyncio.get_running_loop().run_in_executor(None, self.connect)
+            loop = asyncio.get_running_loop()
             data = await loop.run_in_executor(None, self._read_sync)
             return data
         except Exception as e:

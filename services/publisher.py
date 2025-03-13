@@ -59,14 +59,21 @@ class CSVPublisher:
         self.last_execution = None
         self.logger = logger or logging.getLogger("publisher")
         self.state = PublisherState.RUNNING
+        self.state_lock = asyncio.Lock()
 
-    def update_state(self, new_state: str) -> None:
+    async def update_state(self, new_state: str) -> None:
         """Update state when changed by user."""
         state_value = new_state.upper()
-        if state_value == "STOPPED":
-            self.state = PublisherState.STOPPED
-        elif state_value == "RUNNING":
-            self.state = PublisherState.RUNNING
+        async with self.state_lock:
+            if state_value == "STOPPED":
+                self.state = PublisherState.STOPPED
+            elif state_value == "RUNNING":
+                self.state = PublisherState.RUNNING
+
+    async def get_state(self) -> PublisherState:
+        """Get current state in a thread-safe way."""
+        async with self.state_lock:
+            return self.state
 
     async def _read_csv(self, year: str, month: str, day: str) -> pd.DataFrame:
         """
@@ -201,7 +208,7 @@ class CSVPublisher:
         self.logger.info("Starting Publisher...")
         first_run = True
 
-        while self.state == PublisherState.RUNNING:
+        while await self.get_state() == PublisherState.RUNNING:
             try:
                 now = datetime.now()
                 if first_run:
