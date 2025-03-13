@@ -18,7 +18,6 @@ from typing import Dict, Any, Optional
 
 class PublisherState(Enum):
     RUNNING = 1
-    STOPPING = 2
     STOPPED = 3
 
 
@@ -196,30 +195,26 @@ class CSVPublisher:
 
     async def run(self) -> None:
         """
-        Run the publisher asynchronously, executing at :05 of each hour.
-        First execution happens immediately, then waits for next :05 mark.
+        Run the publisher asynchronously, executing at :03 of each hour.
+        First execution happens immediately, then waits for next :03 mark.
         """
         self.logger.info("Starting Publisher...")
         first_run = True
 
-        while self.state != PublisherState.STOPPED:
+        while self.state == PublisherState.RUNNING:
             try:
                 now = datetime.now()
-
-                if self.state == PublisherState.RUNNING:
-                    if first_run:
+                if first_run:
+                    await self._execute_publish_cycle()
+                    first_run = False
+                    self.last_execution = now
+                else:
+                    current_hour = now.replace(minute=3, second=0, microsecond=0)
+                    if now >= current_hour and (
+                        not self.last_execution or self.last_execution.hour != now.hour
+                    ):
                         await self._execute_publish_cycle()
-                        first_run = False
                         self.last_execution = now
-                    else:
-                        current_hour = now.replace(minute=3, second=0, microsecond=0)
-                        if now >= current_hour and (
-                            not self.last_execution
-                            or self.last_execution.hour != now.hour
-                        ):
-                            await self._execute_publish_cycle()
-                            self.last_execution = now
-
                 await asyncio.sleep(self.check_interval)
 
             except Exception as e:
