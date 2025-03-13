@@ -239,9 +239,12 @@ class TestCSVPublisher(unittest.IsolatedAsyncioTestCase):
         mock_response = AsyncMock(spec=ClientResponse)
         mock_response.status = 200
         mock_response.text.return_value = AsyncMock(return_value="Success")
-        mock_post.return_value = AsyncMock(
-            return_value=mock_response
-        )  # Wrap mock_response in an AsyncMock
+        mock_response.raise_for_status = AsyncMock(
+            return_value=None
+        )  # Simula éxito sin excepciones
+
+        # Configurar el mock para el contexto asíncrono
+        mock_post.return_value = mock_response
 
         # Test data
         data = {
