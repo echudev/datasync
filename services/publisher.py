@@ -8,6 +8,7 @@ calculates hourly averages, and sends them to a specified API endpoint, controll
 import os
 import asyncio
 import logging
+import traceback
 from datetime import datetime
 from enum import Enum
 import pandas as pd
@@ -37,10 +38,10 @@ class CSVPublisher:
         Initialize the CSVPublisher.
 
         Args:
-            csv_dir (str): Directory containing the CSV files (default: "data").
-            endpoint_url (str): URL of the API endpoint (loaded from env if None).
-            check_interval (int): Interval in seconds to check the control file (default: 5).
-            logger: Logger instance (optional).
+        - csv_dir (str): Directory containing the CSV files (default: "data").
+        - endpoint_url (str): URL of the API endpoint (loaded from env if None).
+        - check_interval (int): Interval in seconds to check the control file (default: 5).
+        - logger: Logger instance (optional).
         """
         load_dotenv()
         self.csv_dir = csv_dir
@@ -75,53 +76,40 @@ class CSVPublisher:
         async with self.state_lock:
             return self.state
 
+
+    def _build_csv_path(self, year: str, month: str, day: str) -> str:
+        path = os.path.join(self.csv_dir, year, month, f"{day}.csv")
+        return path.replace("\\","/")
+
+
     async def _read_csv(self, year: str, month: str, day: str) -> pd.DataFrame:
         """
         Read the daily CSV file for the given date.
-
-        Args:
-            year (str): Year in YYYY format.
-            month (str): Month in MM format.
-            day (str): Day in DD format.
-
-        Returns:
-            pd.DataFrame: DataFrame with the CSV data.
-
-        Raises:
-            FileNotFoundError: If the CSV file doesn't exist.
-            Exception: For other read errors.
         """
+        csv_path = self._build_csv_path(year, month, day)
+        if not os.path.exists(csv_path):
+            raise FileNotFoundError(f"CSV file not found: {csv_path}")
         try:
-            csv_path = os.path.join(self.csv_dir, year, month, f"{day}.csv")
-            if not os.path.exists(csv_path):
-                raise FileNotFoundError(f"CSV file not found: {csv_path}")
-
-            # Use asyncio.to_thread for file reading to avoid blocking
             df = await asyncio.to_thread(pd.read_csv, csv_path)
             return df
         except Exception as e:
-            self.logger.error(f"Error reading CSV file: {e}")
+            self.logger.error(f"Error reading CSV file {csv_path}: {e}")
             raise
 
     def _calculate_hourly_averages(self, df: pd.DataFrame) -> Dict[str, Any]:
         """
         Calculate hourly averages from the DataFrame.
 
-        Args:
-            df (pd.DataFrame): DataFrame with minutal data.
-
-        Returns:
-            Dict[str, Any]: Dictionary with hourly averages, rounded appropriately.
-
-        Raises:
-            Exception: If calculation fails.
+        - Args: df (pd.DataFrame): DataFrame with minutal data.
+        - Returns: Dict[str, Any]: Dictionary with hourly averages, rounded appropriately.
+        - Raises: Exception: If calculation fails.
         """
         try:
             if "timestamp" not in df.columns:
                 raise ValueError("Column 'timestamp' not found in CSV data")
-            df = (
-                df.copy()
-            )  # Trabajar con una copia para evitar problemas de modificación
+            
+            # Trabajar con una copia para evitar problemas de modificación
+            df = df.copy()
             df["timestamp"] = pd.to_datetime(
                 df["timestamp"], errors="coerce", format="%Y-%m-%d %H:%M"
             )
@@ -159,9 +147,8 @@ class CSVPublisher:
                 for old_key, new_key in header_mapping.items():
                     value = record.get(old_key)
                     if pd.isna(value):
-                        new_record[new_key] = (
-                            None  # Reemplazar NaN con None (JSON null)
-                        )
+                        # Reemplazar NaN con None (JSON null)
+                        new_record[new_key] = None 
                     else:
                         if new_key == "LLUVIA":
                             new_record[new_key] = round(float(value), 2)
@@ -179,25 +166,25 @@ class CSVPublisher:
         """
         Send data to the external endpoint asynchronously.
 
-        Args:
+        - Args: 
             data (Dict[str, Any]): Data to send in JSON format.
-
-        Returns:
-            bool: True if successful, False otherwise.
-        """
-        try:
+            test_mode (bool): If True, always return True (for testing).
+        - Returns: bool: True if successful, False otherwise.
+        """            
+        try:       
             async with aiohttp.ClientSession() as session:
                 async with session.post(
                     self.endpoint_url,
                     headers={"Content-Type": "application/json"},
                     json=data,
                 ) as response:
-                    await response.text()
+                    response_text = await response.text()
                     response.raise_for_status()
-                    self.logger.info("Data sent successfully")
+                    self.logger.info(f"Successfully sent data to endpoint. Response: {response_text[:100]}...")
                     return True
         except Exception as e:
             self.logger.error(f"Error sending data to endpoint: {e}")
+            self.logger.error(f"Traceback: {traceback.format_exc()}")
             return False
 
     async def run(self) -> None:
@@ -242,6 +229,7 @@ class CSVPublisher:
                 self.logger.info("Failed to send data, continuing...")
         except Exception as e:
             self.logger.error(f"Error during publish cycle: {e}")
+            self.logger.error(f"Traceback: {traceback.format_exc()}")
 
 
 def main():
@@ -254,6 +242,7 @@ def main():
         logger.info("Publisher stopped by user")
     except Exception as e:
         logger.error(f"Publisher failed to start: {e}")
+        logger.error(f"Traceback: {traceback.format_exc()}")
 
 
 if __name__ == "__main__":
