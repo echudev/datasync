@@ -114,7 +114,11 @@ def create_app(collector, publisher, winaqms_publisher):
     button_frame.pack(pady=5, fill=tk.X)
 
     # Agregar botón de salir
-    exit_button = ttk.Button(button_frame, text="Salir", command=lambda: asyncio.create_task(exit_application()))
+    exit_button = ttk.Button(
+        button_frame,
+        text="Salir",
+        command=lambda: asyncio.create_task(exit_application()),
+    )
     exit_button.pack(side=tk.RIGHT, padx=10, pady=5)
 
     # Configurar el comportamiento al cerrar la ventana
@@ -128,9 +132,7 @@ def create_app(collector, publisher, winaqms_publisher):
         if tray_icon is None:
             logger.info("Creating tray icon")
             time.sleep(0.2)  # Pequeña pausa para asegurar que la ventana esté oculta
-            tray_icon = create_tray_icon(
-                window, collector, publisher, winaqms_publisher
-            )
+            tray_icon = create_tray_icon()
             if tray_icon is None:
                 logger.error("Failed to create tray icon, showing window again")
                 window.deiconify()
@@ -169,13 +171,13 @@ def create_tray_icon():
             tray_icon = None
 
     # Simplified show_window function that sets a flag
-    def show_window(icon, item):
+    def show_window():
         logger.info("Show window flag set")
         global SHOW_WINDOW_FLAG
         SHOW_WINDOW_FLAG = True
 
     # Simplified exit_app function that sets a flag
-    def exit_app(icon, item):
+    def exit_app(icon):
         logger.info("Exit app flag set")
         global EXIT_APP_FLAG
         EXIT_APP_FLAG = True
@@ -386,7 +388,9 @@ async def update_ui(
                 service_frame,
                 text="Iniciar",
                 command=lambda s=service: asyncio.create_task(
-                    update_control(s, "RUNNING", collector, publisher, winaqms_publisher)
+                    update_control(
+                        s, "RUNNING", collector, publisher, winaqms_publisher
+                    )
                 ),
             ).grid(row=0, column=2, padx=5)
 
@@ -394,7 +398,9 @@ async def update_ui(
                 service_frame,
                 text="Detener",
                 command=lambda s=service: asyncio.create_task(
-                    update_control(s, "STOPPED", collector, publisher, winaqms_publisher)
+                    update_control(
+                        s, "STOPPED", collector, publisher, winaqms_publisher
+                    )
                 ),
             ).grid(row=0, column=3, padx=5)
         except Exception as e:
