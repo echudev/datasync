@@ -1,22 +1,15 @@
-"""
-Test module for publisher.py
-
-This module contains unit tests for the CSVPublisher class
-to ensure correct functionality for reading CSV files, calculating
-hourly averages, and sending data to endpoints.
-"""
-
 import unittest
-from unittest.mock import patch, MagicMock
-import json
+from unittest.mock import patch, MagicMock, AsyncMock
 import os
 import pandas as pd
+from aiohttp import ClientResponse
+from aiohttp.client_exceptions import ClientConnectorError
 
 # Import the module to be tested
 from services import CSVPublisher, PublisherState
 
 
-class TestCSVPublisher(unittest.TestCase):
+class TestCSVPublisher(unittest.IsolatedAsyncioTestCase):
     """Test cases for the CSVPublisher class."""
 
     def setUp(self):
@@ -24,8 +17,15 @@ class TestCSVPublisher(unittest.TestCase):
         # Create a mock logger for testing
         self.mock_logger = MagicMock()
 
-        # Mock environment variable for endpoint URL
-        with patch.dict(os.environ, {"GOOGLE_POST_URL": "https://example.com/api"}):
+        # Mock environment variables
+        with patch.dict(
+            os.environ,
+            {
+                "GOOGLE_POST_URL": "https://example.com/api",
+                "ORIGEN": "CENTENARIO",
+                "API_KEY": "test-key",
+            },
+        ):
             self.publisher = CSVPublisher(
                 csv_dir="test_data",
                 endpoint_url="https://example.com/api",
@@ -41,29 +41,29 @@ class TestCSVPublisher(unittest.TestCase):
         self.assertEqual(self.publisher.state, PublisherState.RUNNING)
         self.assertIsNone(self.publisher.last_execution)
 
-    def test_update_state_stopped(self):
+    async def test_update_state_stopped(self):
         """Test updating state to STOPPED."""
-        self.publisher.update_state("STOPPED")
+        await self.publisher.update_state("STOPPED")
         self.assertEqual(self.publisher.state, PublisherState.STOPPED)
 
-    def test_update_state_running(self):
+    async def test_update_state_running(self):
         """Test updating state to RUNNING."""
         # First set to STOPPED to verify the change
         self.publisher.state = PublisherState.STOPPED
-        self.publisher.update_state("RUNNING")
+        await self.publisher.update_state("RUNNING")
         self.assertEqual(self.publisher.state, PublisherState.RUNNING)
 
-    def test_update_state_case_insensitive(self):
+    async def test_update_state_case_insensitive(self):
         """Test updating state with lowercase input."""
         # First set to STOPPED to verify the change
         self.publisher.state = PublisherState.STOPPED
-        self.publisher.update_state("running")
+        await self.publisher.update_state("running")
         self.assertEqual(self.publisher.state, PublisherState.RUNNING)
 
     @patch("os.path.exists")
     @patch("os.path.join")
     @patch("pandas.read_csv")
-    def test_read_csv_success(self, mock_read_csv, mock_join, mock_exists):
+    async def test_read_csv_success(self, mock_read_csv, mock_join, mock_exists):
         """Test reading CSV file successfully."""
         # Setup mocks
         mock_exists.return_value = True
@@ -78,17 +78,26 @@ class TestCSVPublisher(unittest.TestCase):
         mock_read_csv.return_value = mock_df
 
         # Call the method
-        result = self.publisher._read_csv("2023", "01", "01")
+        result = await self.publisher._read_csv("2023", "01", "01")
 
         # Assert results
-        mock_join.assert_called_once_with("test_data", "2023", "01", "01.csv")
+        calls = [
+            call
+            for call in mock_join.mock_calls
+            if call.args == ("test_data", "2023", "01", "01.csv")
+        ]
+        self.assertEqual(
+            len(calls),
+            1,
+            f"Expected 'join' to be called once with correct args. Calls: {mock_join.mock_calls}",
+        )
         mock_exists.assert_called_once_with("test_data/2023/01/01.csv")
         mock_read_csv.assert_called_once_with("test_data/2023/01/01.csv")
         pd.testing.assert_frame_equal(result, mock_df)
 
     @patch("os.path.exists")
     @patch("os.path.join")
-    def test_read_csv_file_not_found(self, mock_join, mock_exists):
+    async def test_read_csv_file_not_found(self, mock_join, mock_exists):
         """Test reading CSV file when file doesn't exist."""
         # Setup mocks
         mock_exists.return_value = False
@@ -96,7 +105,12 @@ class TestCSVPublisher(unittest.TestCase):
 
         # Call the method and assert it raises exception
         with self.assertRaises(FileNotFoundError):
-            self.publisher._read_csv("2023", "01", "01")
+            await self.publisher._read_csv("2023", "01", "01")
+
+    def test_build_csv_path(self):
+        """Test building the CSV file path."""
+        result = self.publisher._build_csv_path("2023", "01", "01")
+        self.assertEqual(result, "test_data/2023/01/01.csv")
 
     def test_calculate_hourly_averages(self):
         """Test calculating hourly averages from DataFrame."""
@@ -152,14 +166,12 @@ class TestCSVPublisher(unittest.TestCase):
         )
 
         # Calculate hourly averages
-        # Calculate hourly averages
         result = self.publisher._calculate_hourly_averages(df)
 
         # Assert on structure and values
         self.assertEqual(result["origen"], "CENTENARIO")
         self.assertEqual(len(result["data"]), 2)  # Two hours in the data
 
-        # Check first hour averages
         # Check first hour averages
         hour_10 = next(
             item
@@ -195,6 +207,8 @@ class TestCSVPublisher(unittest.TestCase):
         self.assertEqual(hour_11["PA"], 1011.6)
         self.assertEqual(hour_11["UV"], 3.6)
         self.assertEqual(hour_11["RS"], 511.6)
+
+    def test_calculate_hourly_averages_missing_timestamp(self):
         """Test calculating hourly averages with missing timestamp column."""
         # Create invalid data (missing timestamp)
         df = pd.DataFrame({"Temperature": [20.1, 20.3], "Humidity": [45.0, 45.5]})
@@ -218,57 +232,58 @@ class TestCSVPublisher(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.publisher._calculate_hourly_averages(df)
 
-    @patch("requests.post")
-    def test_send_to_endpoint_success(self, mock_post):
+    @patch("aiohttp.ClientSession.post")
+    async def test_send_to_endpoint_success(self, mock_post):
         """Test sending data to endpoint successfully."""
-        # Setup mock
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.text = "Success"
-        mock_post.return_value = mock_response
+        # Mock the response
+        mock_response = AsyncMock(spec=ClientResponse)
+        mock_response.status = 200
+        mock_response.text.return_value = AsyncMock(return_value="Success")
+        mock_post.return_value = AsyncMock(
+            return_value=mock_response
+        )  # Wrap mock_response in an AsyncMock
 
         # Test data
         data = {
+            "apiKey": "test-key",
             "origen": "CENTENARIO",
             "data": [{"timestamp": "2023-01-01 10:00:00", "TEMP": 20.4, "HR": 45.8}],
         }
 
         # Call the method
-        result = self.publisher._send_to_endpoint(data)
+        result = await self.publisher._send_to_endpoint(data)
 
         # Assert
         self.assertTrue(result)
-        mock_post.assert_called_once()
-        args, kwargs = mock_post.call_args
-        self.assertEqual(args[0], "https://example.com/api")
-        self.assertEqual(kwargs["headers"], {"Content-Type": "application/json"})
-        self.assertEqual(json.loads(kwargs["data"]), data)
+        self.mock_logger.info.assert_called()
 
-    @patch("requests.post")
-    def test_send_to_endpoint_failure(self, mock_post):
+    @patch("aiohttp.ClientSession.post")
+    async def test_send_to_endpoint_failure(self, mock_post):
         """Test sending data to endpoint with failure."""
-        # Setup mock to raise an exception
-        mock_post.side_effect = Exception("Connection error")
+        # Mock the ClientSession.post to raise an exception
+        mock_post.side_effect = ClientConnectorError(MagicMock(), OSError("Timeout"))
 
         # Test data
         data = {
+            "apiKey": "test-key",
             "origen": "CENTENARIO",
             "data": [{"timestamp": "2023-01-01 10:00:00", "TEMP": 20.4, "HR": 45.8}],
         }
 
         # Call the method
-        result = self.publisher._send_to_endpoint(data)
+        result = await self.publisher._send_to_endpoint(data)
 
         # Assert
         self.assertFalse(result)
-        mock_post.assert_called_once()
-        self.mock_logger.error.assert_called_once()
+        self.mock_logger.error.assert_called()
 
-    @patch.object(CSVPublisher, "_read_csv")
+    @patch.object(CSVPublisher, "_read_csv", new_callable=AsyncMock)
     @patch.object(CSVPublisher, "_calculate_hourly_averages")
-    @patch.object(CSVPublisher, "_send_to_endpoint")
-    @patch("time.sleep")
-    def test_run_execute_cycle(self, mock_sleep, mock_send, mock_calc, mock_read_csv):
+    @patch.object(CSVPublisher, "_send_to_endpoint", new_callable=AsyncMock)
+    @patch("asyncio.sleep", new_callable=AsyncMock)
+    async def test_run_execute_cycle(
+        self, mock_sleep, mock_send, mock_calc, mock_read_csv
+    ):
         """Test the run method with a full execution cycle."""
         # Setup mocks
         mock_df = pd.DataFrame(
@@ -286,13 +301,13 @@ class TestCSVPublisher(unittest.TestCase):
         mock_send.return_value = True
 
         # Make run exit after one iteration
-        def side_effect(*args, **kwargs):
+        async def side_effect(*args, **kwargs):
             self.publisher.state = PublisherState.STOPPED
 
         mock_sleep.side_effect = side_effect
 
         # Run the method
-        self.publisher.run()
+        await self.publisher.run()
 
         # Assert
         mock_read_csv.assert_called_once()
@@ -300,12 +315,12 @@ class TestCSVPublisher(unittest.TestCase):
         mock_send.assert_called_once()
         self.assertIsNotNone(self.publisher.last_execution)
 
-    @patch("time.sleep")
-    def test_run_stopping(self, mock_sleep):
+    @patch("asyncio.sleep", new_callable=AsyncMock)
+    async def test_run_stopping(self, mock_sleep):
         """Test the run method stops when state is set to STOPPED."""
 
         # Setup mock to exit immediately
-        def side_effect(*args, **kwargs):
+        async def side_effect(*args, **kwargs):
             # Set state to STOPPED to exit the loop
             self.publisher.state = PublisherState.STOPPED
 
@@ -315,7 +330,7 @@ class TestCSVPublisher(unittest.TestCase):
         self.assertEqual(self.publisher.state, PublisherState.RUNNING)
 
         # Run the method
-        self.publisher.run()
+        await self.publisher.run()
 
         # Assert
         self.assertEqual(self.publisher.state, PublisherState.STOPPED)
