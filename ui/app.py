@@ -17,6 +17,7 @@ import pystray
 from PIL import Image
 import time
 import threading
+from typing import Optional
 
 from services import (
     CollectorState,
@@ -38,7 +39,12 @@ SHOW_WINDOW_FLAG = False
 EXIT_APP_FLAG = False
 
 
-def create_app(collector, publisher, winaqms_publisher):
+def create_app(
+    collector,
+    publisher,
+    winaqms_publisher,
+    shutdown_event: Optional[asyncio.Event] = None,
+):
     """
     Create the main application window and setup the UI.
 
@@ -88,17 +94,15 @@ def create_app(collector, publisher, winaqms_publisher):
     notebook.add(measurements_tab, text="Mediciones")
     notebook.add(logs_tab, text="Logs")
 
+    # Configurar el TrayIconManager con la ventana y el evento de cierre
+    global tray_manager
+    tray_manager = TrayIconManager(window=window, shutdown_event=shutdown_event)
+
     # Función para salir de la aplicación
     async def exit_application():
-        logger.info("Exit button clicked, shutting down application")
-
-        # Detener el ícono si existe
-        global tray_icon
-        if tray_icon:
-            try:
-                tray_icon.stop()
-            except Exception as e:
-                logger.error(f"Error stopping tray icon: {e}")
+        global tray_manager
+        # Detener el tray icon
+        tray_manager.stop()
 
         # Detener los servicios
         try:
@@ -106,127 +110,131 @@ def create_app(collector, publisher, winaqms_publisher):
         except Exception as e:
             logger.error(f"Error shutting down services: {e}")
 
+        # Activar evento de cierre
+        if shutdown_event:
+            shutdown_event.set()
+
         # Cerrar la ventana
         window.quit()
 
-    # Crear un frame para el botón de salir
-    button_frame = ttk.Frame(window)
-    button_frame.pack(pady=5, fill=tk.X)
-
-    # Agregar botón de salir
-    exit_button = ttk.Button(
-        button_frame,
-        text="Salir",
-        command=lambda: asyncio.create_task(exit_application()),
-    )
-    exit_button.pack(side=tk.RIGHT, padx=10, pady=5)
-
-    # Configurar el comportamiento al cerrar la ventana
+    # Configurar el cierre de ventana
     def on_closing():
-        logger.info("Window closing, minimizing to tray")
-        # Minimizar la ventana primero
-        window.withdraw()
+        """Handle window closing event."""
+        try:
+            # Minimizar la ventana primero
+            window.withdraw()
 
-        # Luego crear el ícono (esto es importante para evitar problemas de orden)
-        global tray_icon
-        if tray_icon is None:
-            logger.info("Creating tray icon")
-            time.sleep(0.2)  # Pequeña pausa para asegurar que la ventana esté oculta
-            tray_icon = create_tray_icon()
-            if tray_icon is None:
-                logger.error("Failed to create tray icon, showing window again")
-                window.deiconify()
-                window.lift()
+            # Intentar crear/mostrar el tray icon
+            if tray_manager.create():
+                return  # Éxito - mantener la app corriendo
+
+            # Si falla la creación del tray icon, cerrar la app
+            logger.error("Failed to create tray icon")
+            window.deiconify()
+            asyncio.create_task(exit_application())
+
+        except Exception as e:
+            logger.error(f"Error in on_closing: {e}")
+            window.quit()
 
     window.protocol("WM_DELETE_WINDOW", on_closing)
 
     # Schedule the check for tray icon flags
-    window.after(100, lambda: check_tray_flags(window))
+    window.after(100, lambda: check_tray_flags(window, shutdown_event))
 
     return window
 
 
-def create_tray_icon():
-    """
-    Create a system tray icon for the application.
+class TrayIconManager:
+    def __init__(self, window=None, shutdown_event=None):
+        self.icon = None
+        self.is_running = False
+        self.window = window
+        self.shutdown_event = shutdown_event
 
-    Args:
-        window: The main window instance
-        collector: The data collector instance
-        publisher: The CSV publisher instance
-        winaqms_publisher: The WinAQMS publisher instance
-    """
-    # Global variables
-    global tray_icon, SHOW_WINDOW_FLAG, EXIT_APP_FLAG
+    def create(self):
+        if self.icon:
+            try:
+                self.icon.stop()
+                time.sleep(0.2)
+            except Exception:
+                logger.error("Error stopping previous tray icon")
+            self.icon = None
+            self.is_running = False
 
-    # Detener el ícono existente si hay uno
-    if tray_icon is not None:
         try:
-            logger.info("Stopping existing tray icon")
-            tray_icon.stop()
-            tray_icon = None
-            time.sleep(1.0)
-        except Exception as e:
-            logger.error(f"Error stopping existing tray icon: {e}")
-            tray_icon = None
+            icon = pystray.Icon("DSyncIcon")
+            icon.menu = pystray.Menu(
+                pystray.MenuItem("Mostrar", self.show_window),
+                pystray.MenuItem("Salir", lambda: self.exit_app(icon)),
+            )
 
-    # Simplified show_window function that sets a flag
-    def show_window():
-        logger.info("Show window flag set")
+            current_dir = os.path.dirname(os.path.abspath(__file__))
+            icon_path = os.path.join(current_dir, "..", "assets", "icon.ico")
+            icon.icon = (
+                Image.open(icon_path)
+                if os.path.exists(icon_path)
+                else Image.new("RGB", (64, 64), color=(0, 128, 0))
+            )
+
+            self.icon = icon
+            self.is_running = True
+
+            # Run icon in thread
+            threading.Thread(target=lambda: icon.run(), daemon=True).start()
+            return True
+        except Exception as e:
+            logger.error(f"Error creating tray icon: {e}")
+            return False
+
+    def stop(self):
+        if self.icon and self.is_running:
+            try:
+                self.icon.stop()
+                self.icon = None
+                self.is_running = False
+            except Exception as e:
+                logger.error(f"Error stopping tray icon: {e}")
+
+    def show_window(self):
         global SHOW_WINDOW_FLAG
         SHOW_WINDOW_FLAG = True
 
-    # Simplified exit_app function that sets a flag
-    def exit_app(icon):
-        logger.info("Exit app flag set")
-        global EXIT_APP_FLAG
-        EXIT_APP_FLAG = True
-        # Force application to exit if needed
+    def exit_app(self, icon=None):
+        """Iniciar secuencia de cierre de la aplicación."""
         try:
-            icon.stop()
+            # Detener el tray icon
+            self.stop()
+
+            # Activar el evento de cierre
+            if self.shutdown_event:
+                self.shutdown_event.set()
+
+            # Forzar cierre de la ventana
+            if self.window:
+                self.window.quit()
+
         except Exception as e:
-            logger.error(f"Error stopping tray icon: {e}")
-        # Use os._exit as a last resort if window.quit doesn't work
-        os._exit(0)
+            logger.error(f"Error during exit_app: {e}")
+            # Forzar cierre en caso de error
+            os._exit(0)
 
-    # Menu setup
-    menu = (
-        pystray.MenuItem("Mostrar", show_window),
-        pystray.MenuItem("Salir", exit_app),
-    )
 
-    try:
-        # Create the icon
-        icon = pystray.Icon("DSyncIcon")
-        icon.menu = pystray.Menu(*menu)
+# Crear una instancia global del manager
+tray_manager = TrayIconManager()
 
-        # Set the icon image
-        current_dir = os.path.dirname(os.path.abspath(__file__))
-        icon_path = os.path.join(current_dir, "..", "assets", "icon.ico")
-        if os.path.exists(icon_path):
-            icon.icon = Image.open(icon_path)
-        else:
-            logger.warning(f"Icon file not found at {icon_path}")
-            # Create a simple default icon
-            image = Image.new("RGB", (64, 64), color=(0, 128, 0))
-            icon.icon = image
 
-        # Store the icon reference
-        tray_icon = icon
+def set_show_window_flag():
+    """Set show window flag safely."""
+    global SHOW_WINDOW_FLAG
+    SHOW_WINDOW_FLAG = True
 
-        # Run the icon in a thread
-        def run_icon():
-            logger.info("Starting tray icon")
-            icon.run()
-            logger.info("Tray icon stopped")
 
-        # Start the icon thread
-        threading.Thread(target=run_icon, daemon=True).start()
-
-        return icon
-    except Exception as e:
-        logger.error(f"Error creating tray icon: {e}")
-        return None
+def set_exit_flag(icon=None):
+    """Set exit flag safely."""
+    global EXIT_APP_FLAG, tray_icon
+    EXIT_APP_FLAG = True
+    tray_manager.stop()
 
 
 async def run_app(window, collector, publisher, winaqms_publisher):
@@ -264,7 +272,6 @@ async def run_app(window, collector, publisher, winaqms_publisher):
                 if "application has been destroyed" in str(e):
                     # La ventana ha sido destruida, salir del bucle
                     running = False
-                    logger.info("Window has been destroyed, exiting UI loop")
                     break
                 else:
                     # Otro error de Tcl, registrar pero continuar
@@ -637,13 +644,13 @@ async def update_control(service, state, collector, publisher, winaqms_publisher
 
 
 # Function to check flags and perform actions in the main thread
-def check_tray_flags(window):
-    global SHOW_WINDOW_FLAG, EXIT_APP_FLAG
+def check_tray_flags(window, shutdown_event):
+    """Check and process tray icon flags."""
+    global SHOW_WINDOW_FLAG, EXIT_APP_FLAG, tray_manager
 
-    # Check if show window flag is set
     if SHOW_WINDOW_FLAG:
-        logger.info("Processing show window flag")
         try:
+            tray_manager.stop()
             window.deiconify()
             window.lift()
             window.focus_force()
@@ -651,14 +658,14 @@ def check_tray_flags(window):
             logger.error(f"Error showing window: {e}")
         SHOW_WINDOW_FLAG = False
 
-    # Check if exit app flag is set
     if EXIT_APP_FLAG:
         logger.info("Processing exit app flag")
         try:
+            if shutdown_event:
+                shutdown_event.set()
             window.quit()
         except Exception as e:
             logger.error(f"Error quitting application: {e}")
 
-    # Schedule next check
-    if not EXIT_APP_FLAG:  # Don't schedule if we're exiting
-        window.after(100, lambda: check_tray_flags(window))
+    if not EXIT_APP_FLAG and window.winfo_exists():
+        window.after(100, lambda: check_tray_flags(window, shutdown_event))
