@@ -11,6 +11,7 @@ import asyncio
 import aiohttp
 import aiofiles
 import logging
+import aiocsv  # Add this import
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from enum import Enum
@@ -20,7 +21,6 @@ import json
 import backoff
 from aiohttp import ClientTimeout
 from aiohttp.client_exceptions import ClientError
-from io import StringIO  # Remover io del import general
 
 
 class PublisherState(Enum):
@@ -115,7 +115,7 @@ class WinAQMSPublisher:
 
     async def _read_wad_file(self, year: str, month: str, day: str) -> pd.DataFrame:
         """
-        Read the WAD file for the given date asynchronously.
+        Read the WAD file for the given date asynchronously using aiocsv.
         """
         try:
             wad_folder = os.path.join(self.wad_dir, year, month)
@@ -125,21 +125,25 @@ class WinAQMSPublisher:
             if not os.path.exists(wad_path):
                 raise FileNotFoundError(f"WAD file not found: {wad_path}")
 
-            # Lectura asíncrona del archivo
-            async with aiofiles.open(wad_path, mode="r") as f:
-                content = await f.read()
+            rows = []
+            header = None
+            async with aiofiles.open(wad_path, mode="r", encoding="utf-8") as f:
+                reader = aiocsv.AsyncReader(f)
+                header = await reader.__anext__()  # Get header first
+                async for row in reader:
+                    # Convert numeric strings to float where possible
+                    processed_row = []
+                    for value in row:
+                        try:
+                            processed_row.append(float(value))
+                        except (ValueError, TypeError):
+                            processed_row.append(value)
+                    rows.append(processed_row)
 
-            # Procesamiento del contenido (esto es CPU-bound, no I/O-bound)
-            df = await asyncio.to_thread(pd.read_csv, StringIO(content))
-
-            # Conversión de fechas (también CPU-bound)
-            df["Date_Time"] = await asyncio.to_thread(
-                pd.to_datetime,
-                df["Date_Time"],
-                format="%Y/%m/%d %H:%M:%S",
-                errors="coerce",
+            df = pd.DataFrame(rows, columns=header)
+            df["Date_Time"] = pd.to_datetime(
+                df["Date_Time"], format="%Y/%m/%d %H:%M:%S", errors="coerce"
             )
-
             return df
 
         except Exception as e:

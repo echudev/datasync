@@ -140,10 +140,21 @@ class CSVPublisher:
 
         try:
             rows = []
-            async with aiofiles.open(csv_path, mode="r") as f:
-                async for row in aiocsv.AsyncReader(f):
-                    rows.append(row)
-            df = pd.DataFrame(rows[1:], columns=rows[0])
+            header = None
+            async with aiofiles.open(csv_path, mode="r", encoding="utf-8") as f:
+                reader = aiocsv.AsyncReader(f)
+                header = await reader.__anext__()  # Get header first
+                async for row in reader:
+                    # Convert numeric strings to float where possible
+                    processed_row = []
+                    for value in row:
+                        try:
+                            processed_row.append(float(value))
+                        except (ValueError, TypeError):
+                            processed_row.append(value)
+                    rows.append(processed_row)
+
+            df = pd.DataFrame(rows, columns=header)
             df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
             return df
         except Exception as e:
