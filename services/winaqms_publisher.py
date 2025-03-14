@@ -244,11 +244,10 @@ class WinAQMSPublisher:
             bool: True if successful, False otherwise.
         """
         try:
-            # Modificar el formato de payload para que sea un arreglo
             api_payload = {
                 "apiKey": self.apiKey,
                 "origen": self.origen,
-                "data": [sensor_data],  # Envolver en lista
+                "data": [sensor_data],
             }
 
             async with aiohttp.ClientSession(timeout=self.timeout) as session:
