@@ -86,8 +86,7 @@ class CSVPublisher:
         self.logger = logger or logging.getLogger("publisher")
         self.state = PublisherState.RUNNING
         self.state_lock = asyncio.Lock()
-        self.control_file = CONTROL_FILE  # Usar la constante del módulo control
-        # Sensor mapping for the CSV columns
+        self.control_file = CONTROL_FILE
         self.sensors = [
             "Temperature",
             "Humidity",
@@ -99,7 +98,7 @@ class CSVPublisher:
             "SolarRadiation",
         ]
         self.header_mapping = {
-            "Temperature": "TEMP",  # Corregido el orden (API name -> CSV column)
+            "Temperature": "TEMP",
             "Humidity": "HR",
             "Pressure": "PA",
             "WindSpeed": "VV",
@@ -109,7 +108,7 @@ class CSVPublisher:
             "SolarRadiation": "RS",
         }
         self.timeout = ClientTimeout(total=30)
-        self.connector = TCPConnector(limit=10)  # Limit concurrent connections
+        self.connector = TCPConnector(limit=10)
         self.max_retries = 3
 
     async def update_state(self, new_state: str) -> None:
@@ -127,7 +126,18 @@ class CSVPublisher:
             return self.state
 
     def _build_csv_path(self, year: str, month: str, day: str) -> str:
-        path = os.path.join(self.csv_dir, year, month, f"{day}.csv")
+        """
+        Build CSV file path from date components.
+
+        Args:
+            year: Year as integer or string
+            month: Month as integer or string (1-12)
+            day: Day as integer or string (1-31)
+        """
+        year_str = str(year)
+        month_str = str(month).zfill(2)  # Ensure 2 digits
+        day_str = str(day).zfill(2)  # Ensure 2 digits
+        path = os.path.join(self.csv_dir, year_str, month_str, f"{day_str}.csv")
         return path.replace("\\", "/")
 
     async def _read_csv(self, year: str, month: str, day: str) -> pd.DataFrame:
@@ -205,10 +215,13 @@ class CSVPublisher:
                 "RS": None,
             }
 
-            # Calculate averages for all parameters using the mapping
-            for api_name, csv_column in self.header_mapping.items():
-                if csv_column in df.columns:
-                    values = pd.to_numeric(df[csv_column], errors="coerce")
+            # Calculate averages using the sensor names and mapping them to API names
+            for sensor_name in self.sensors:
+                if sensor_name in df.columns:
+                    api_name = self.header_mapping[
+                        sensor_name
+                    ]  # Get the API field name
+                    values = pd.to_numeric(df[sensor_name], errors="coerce")
                     if not values.empty and not values.isna().all():
                         result[api_name] = round(float(values.mean()), 2)
 
@@ -222,28 +235,28 @@ class CSVPublisher:
         backoff.expo, (ClientError, asyncio.TimeoutError), max_tries=3, max_time=30
     )
     async def _send_to_endpoint(self, data: Dict[str, Any]) -> bool:
-        """
-        Send data to the external endpoint asynchronously.
+        """Send data to the external endpoint asynchronously."""
+        api_payload = {
+            "apiKey": self.apiKey,
+            "origen": self.origen,
+            "data": [data],
+        }
 
-        - Args:
-            data (Dict[str, Any]): Data to send in JSON format.
-            test_mode (bool): If True, always return True (for testing).
-        - Returns: bool: True if successful, False otherwise.
-        """
         try:
-            async with aiohttp.ClientSession(
-                timeout=self.timeout, connector=self.connector
-            ) as session:
+            async with aiohttp.ClientSession() as session:
                 async with session.post(
                     self.endpoint_url,
                     headers={"Content-Type": "application/json"},
-                    json=data,
+                    json=api_payload,
                     raise_for_status=True,
                 ) as response:
-                    await response.read()
+                    response_text = await response.text()
+                    self.logger.info(
+                        f"Data sent successfully: {data['timestamp']}, Response: {response_text[:100]}"
+                    )
                     return True
         except Exception as e:
-            self.logger.error(f"Error sending data: {e}")
+            self.logger.error(f"Unexpected error sending data: {str(e)}")
             return False
 
     async def _execute_publish_cycle(self) -> None:
@@ -261,11 +274,12 @@ class CSVPublisher:
 
         while process_hour <= current_hour:
             try:
-                df = await self._read_csv(
-                    process_hour.year,
+                year, month, day = (
+                    process_hour.strftime("%Y"),
                     process_hour.strftime("%m"),
                     process_hour.strftime("%d"),
                 )
+                df = await self._read_csv(year, month, day)
                 if df is not None:
                     hourly_data = self._calculate_hourly_averages(df, process_hour)
                     if hourly_data:
