@@ -3,16 +3,15 @@ Data Collection System
 
 Main entry point for the data collection system with a Tkinter GUI to control
 DataCollector and Publisher services using a control file.
-This version (.pyw) runs without showing a console window.
 """
 
 import os
 import asyncio
+import aiofiles
 import json
 import logging
-import signal
 import sys
-import platform
+import signal
 from pathlib import Path
 from typing import List, TypedDict
 
@@ -33,16 +32,12 @@ log_dir = "logs"
 if not os.path.exists(log_dir):
     os.makedirs(log_dir)
 
-# Crear la carpeta 'assets' si no existe
-assets_dir = "assets"
-if not os.path.exists(assets_dir):
-    os.makedirs(assets_dir)
-
 # Configure logging (centralizado para todos los módulos)
 logging.basicConfig(
     level=logging.INFO,  # Nivel INFO para eventos clave y errores
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     handlers=[
+        logging.StreamHandler(),
         logging.FileHandler(os.path.join(log_dir, "data_collection.log")),
     ],
 )
@@ -66,6 +61,22 @@ class ControlState(TypedDict):
 async def main() -> None:
     """Main entry point for the application with Tkinter GUI."""
     logger.info("Starting data collection system")
+
+    # Crear un evento de cierre
+    shutdown_event = asyncio.Event()
+    tasks = []
+
+    # Configurar el manejador de señales de forma compatible con Windows
+    def signal_handler(signum, frame):
+        """Handle Ctrl+C signal"""
+        logger.info("Ctrl+C detected, initiating shutdown...")
+        # Usar asyncio.run_coroutine_threadsafe para ejecutar código asíncrono desde un callback síncrono
+        loop = asyncio.get_event_loop()
+        asyncio.run_coroutine_threadsafe(shutdown_event.set(), loop)
+
+    # Registrar el manejador de señales de forma compatible con Windows
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
 
     try:
         # Cargar configuración desde archivo
@@ -96,7 +107,6 @@ async def main() -> None:
         for sensor_config in sensors_config:
             columns.extend(sensor_config["keys"])
 
-        # Inicializar DataCollector y Publisher
         async with DataCollector(output_path=Path("data"), logger=logger) as collector:
             collector.set_columns(columns)
 
@@ -105,96 +115,72 @@ async def main() -> None:
             winaqms_publisher = WinAQMSPublisher(logger=logger)
 
             # Escribir estado inicial en control.json
-            with open("control.json", "w") as f:
-                json.dump(
-                    {
-                        "data_collector": "RUNNING",
-                        "publisher": "RUNNING",
-                        "winaqms_publisher": "RUNNING",
-                    },
-                    f,
-                    indent=4,
-                )
-
-            # Iniciar publishers si están en estado RUNNING
-            publisher_task = None
-            winaqms_publisher_task = None
+            await update_service_state("data_collector", "RUNNING")
+            await update_service_state("publisher", "RUNNING")
+            await update_service_state("winaqms_publisher", "RUNNING")
 
             with open("control.json", "r") as f:
                 control = json.load(f)
 
+            # Crear todas las tareas de una vez
+            tasks = []
+
+            # Agregar tareas de recolección
+            tasks.extend(
+                [
+                    asyncio.create_task(collector.collect_data(sensor, config))
+                    for sensor, config in zip(sensors, sensors_config)
+                ]
+            )
+
+            # Agregar tarea de procesamiento
+            tasks.append(
+                asyncio.create_task(
+                    collector.process_and_save_data(output_interval=60.0, batch_size=10)
+                )
+            )
+
+            # Agregar publishers si están activos
             if control.get("publisher", "STOPPED").upper() == "RUNNING":
-                publisher_task = asyncio.create_task(publisher.run())
+                tasks.append(asyncio.create_task(publisher.run()))
                 logger.info("Publisher started")
 
             if control.get("winaqms_publisher", "STOPPED").upper() == "RUNNING":
-                winaqms_publisher_task = asyncio.create_task(winaqms_publisher.run())
+                tasks.append(asyncio.create_task(winaqms_publisher.run()))
                 logger.info("WinAQMS Publisher started")
 
-            # Manejo de señales para Windows
-            if platform.system() == "Windows":
-
-                async def windows_signal_handler():
-                    try:
-                        while collector.state != CollectorState.STOPPED:
-                            await asyncio.sleep(0.1)
-                    except asyncio.CancelledError:
-                        await shutdown(collector, publisher, winaqms_publisher)
-
-                asyncio.create_task(windows_signal_handler())
-            else:
-                # Manejo de señales para Unix
-                def handle_shutdown():
-                    asyncio.create_task(
-                        shutdown(collector, publisher, winaqms_publisher)
-                    )
-
-                for sig in (signal.SIGINT, signal.SIGTERM):
-                    signal.signal(sig, lambda signum, frame: handle_shutdown())
-
-            # Tareas de colección
-            collection_tasks = [
-                asyncio.create_task(collector.collect_data(sensor, config))
-                for sensor, config in zip(sensors, sensors_config)
-            ]
-            processing_task = asyncio.create_task(
-                collector.process_and_save_data(output_interval=60.0, batch_size=10)
-            )
-
-            # Crear y correr la ventana de Tkinter usando módulo UI
-            window = create_app(collector, publisher, winaqms_publisher)
-
-            # Ejecutar la aplicación
-            ui_task = asyncio.create_task(
-                run_app(window, collector, publisher, winaqms_publisher)
+            # Agregar UI task
+            window = create_app(collector, publisher, winaqms_publisher, shutdown_event)
+            tasks.append(
+                asyncio.create_task(
+                    run_app(window, collector, publisher, winaqms_publisher)
+                )
             )
 
             try:
-                # Esperar a que terminen las tareas
-                await asyncio.gather(ui_task)
+                # Esperar a que se active el evento de cierre o terminen las tareas
+                await shutdown_event.wait()
 
-                # Cancelar las tareas cuando la UI termina
-                for task in collection_tasks + [processing_task]:
+                # Cancelar todas las tareas
+                for task in tasks:
                     if not task.done():
                         task.cancel()
 
-                if publisher_task and not publisher_task.done():
-                    publisher_task.cancel()
+                # Esperar a que todas las tareas se cancelen
+                await asyncio.gather(*tasks, return_exceptions=True)
 
-                if winaqms_publisher_task and not winaqms_publisher_task.done():
-                    winaqms_publisher_task.cancel()
-
-                # Esperar a que las tareas se cancelen
-                await asyncio.sleep(1)
+                # Asegurarse de que los servicios se detengan
+                await shutdown(collector, publisher, winaqms_publisher)
 
             except asyncio.CancelledError:
                 logger.info("Main task canceled")
             except Exception as e:
-                logger.error(f"Unhandled exception in main: {e}", exc_info=True)
+                logger.error(f"Error during shutdown: {e}", exc_info=True)
             finally:
-                # Asegurarse de que los servicios se detengan correctamente
+                # Último intento de detener servicios
                 await shutdown(collector, publisher, winaqms_publisher)
                 logger.info("Data collection system stopped")
+
     except Exception as e:
         logger.error(f"Critical error in main: {e}", exc_info=True)
         sys.exit(1)
@@ -222,16 +208,9 @@ async def shutdown(
                 winaqms_publisher.state = PublisherState.STOPPED
 
         # 2. Update control.json for persistence and external control
-        with open("control.json", "w") as f:
-            json.dump(
-                {
-                    "data_collector": "STOPPED",
-                    "publisher": "STOPPED",
-                    "winaqms_publisher": "STOPPED",
-                },
-                f,
-                indent=4,
-            )
+        await update_service_state("data_collector", "STOPPED")
+        await update_service_state("publisher", "STOPPED")
+        await update_service_state("winaqms_publisher", "STOPPED")
 
         # 3. Give time for tasks to finish gracefully
         await asyncio.sleep(1)
@@ -241,11 +220,54 @@ async def shutdown(
         logger.error(f"Error during shutdown: {e}", exc_info=True)
 
 
+async def update_service_state(service_name: str, new_state: str) -> None:
+    """Update service state while preserving last_successful data."""
+    try:
+        async with aiofiles.open("control.json", "r") as f:
+            data = json.loads(await f.read())
+
+        # Preserve last_successful data
+        last_successful = data.get("last_successful", {})
+
+        # Update only the service state
+        data[service_name] = new_state
+
+        # Ensure last_successful is preserved
+        data["last_successful"] = last_successful
+
+        async with aiofiles.open("control.json", "w") as f:
+            await f.write(json.dumps(data, indent=4))
+
+    except Exception as e:
+        logger.error(f"Error updating control file: {e}")
+
+
 if __name__ == "__main__":
     try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        logger.info("Program interrupted by user")
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
+        # Asegurar que el loop se cierre correctamente
+        try:
+            loop.run_until_complete(main())
+        except KeyboardInterrupt:
+            logger.info("Keyboard interrupt detected")
+        finally:
+            try:
+                # Cancelar todas las tareas pendientes
+                pending = asyncio.all_tasks(loop)
+                for task in pending:
+                    task.cancel()
+                # Esperar a que se completen las cancelaciones
+                loop.run_until_complete(
+                    asyncio.gather(*pending, return_exceptions=True)
+                )
+            except Exception as e:
+                logger.error(f"Error during shutdown: {e}")
+            finally:
+                loop.close()
+
     except Exception as e:
         logger.error(f"Unhandled exception: {e}", exc_info=True)
-        sys.exit(1)
+    finally:
+        sys.exit(0)

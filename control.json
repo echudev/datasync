@@ -1,5 +1,9 @@
 {
     "data_collector": "STOPPED",
     "publisher": "STOPPED",
-    "winaqms_publisher": "STOPPED"
+    "winaqms_publisher": "STOPPED",
+    "last_successful": {
+        "publisher": null,
+        "winaqms_publisher": null
+    }
 }
