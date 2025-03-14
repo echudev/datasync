@@ -11,7 +11,7 @@ import asyncio
 import aiohttp
 import aiofiles
 import logging
-import aiocsv  # Add this import
+import aiocsv
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from enum import Enum
@@ -22,6 +22,7 @@ import backoff
 from aiohttp import ClientTimeout
 from aiohttp.client_exceptions import ClientError
 from utils.control import CONTROL_FILE, update_control_file
+from pathlib import Path
 
 
 class PublisherState(Enum):
@@ -56,7 +57,6 @@ class WinAQMSPublisher:
         apiKey: str = None,
         check_interval: int = 5,
         logger: Optional[logging.Logger] = None,
-        control_file: str = "c:\\datasync\\control.json",
     ):
         """
         Initialize the WinAQMSPublisher.
@@ -68,7 +68,7 @@ class WinAQMSPublisher:
             logger: Logger instance (optional).
         """
         load_dotenv()
-        self.wad_dir = wad_dir
+        self.wad_dir = Path(wad_dir)
         self.endpoint_url = endpoint_url or os.getenv("GOOGLE_POST_URL")
         if not self.endpoint_url:
             raise ValueError(
@@ -114,16 +114,26 @@ class WinAQMSPublisher:
         async with self.state_lock:
             return self.state
 
+    def _build_wad_path(self, year: str, month: str, day: str) -> Path:
+        """Build path to WAD file for given date."""
+        # Convert all inputs to strings and zero-pad month/day
+        year_str = str(year)
+        month_str = str(month).zfill(2)
+        day_str = str(day).zfill(2)
+
+        # Build WAD filename
+        wad_file = f"eco{year_str}{month_str}{day_str}.wad"
+
+        # Construct full path using Path object
+        return self.wad_dir / year_str / month_str / wad_file
+
     async def _read_wad_file(self, year: str, month: str, day: str) -> pd.DataFrame:
         """
         Read the WAD file for the given date asynchronously using aiocsv.
         """
         try:
-            wad_folder = os.path.join(self.wad_dir, year, month)
-            wad_file = f"eco{year}{month}{day}.wad"
-            wad_path = os.path.join(wad_folder, wad_file)
-
-            if not os.path.exists(wad_path):
+            wad_path = self._build_wad_path(year, month, day)
+            if not wad_path.exists():
                 raise FileNotFoundError(f"WAD file not found: {wad_path}")
 
             rows = []
@@ -234,10 +244,11 @@ class WinAQMSPublisher:
             bool: True if successful, False otherwise.
         """
         try:
-            api_payload: ApiPayload = {
+            # Modificar el formato de payload para que sea un arreglo
+            api_payload = {
                 "apiKey": self.apiKey,
                 "origen": self.origen,
-                "data": sensor_data,
+                "data": [sensor_data],  # Envolver en lista
             }
 
             async with aiohttp.ClientSession(timeout=self.timeout) as session:
@@ -247,11 +258,9 @@ class WinAQMSPublisher:
                     json=api_payload,
                     raise_for_status=True,
                 ) as response:
-                    response_text = (
-                        await response.text()
-                    )  # Asegurar que leemos la respuesta
+                    response_text = await response.text()
                     self.logger.info(
-                        f"WinAqms data sent successfully: {response_text[:100]}..."
+                        f"WinAqms data: {sensor_data['timestamp']}, sent successfully to: {response_text[:100]}"
                     )
                     return True
         except Exception as e:
