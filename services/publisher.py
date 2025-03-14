@@ -21,6 +21,7 @@ import aiocsv
 import backoff
 from aiohttp import ClientTimeout, TCPConnector
 from aiohttp.client_exceptions import ClientError
+from utils.control import CONTROL_FILE, update_control_file
 
 
 class PublisherState(Enum):
@@ -57,7 +58,6 @@ class CSVPublisher:
         apiKey: str = None,
         check_interval: int = 5,
         logger: Optional[logging.Logger] = None,
-        control_file: str = "d:\\datasync\\control.json",
     ):
         """
         Initialize the CSVPublisher.
@@ -86,7 +86,7 @@ class CSVPublisher:
         self.logger = logger or logging.getLogger("publisher")
         self.state = PublisherState.RUNNING
         self.state_lock = asyncio.Lock()
-        self.control_file = control_file
+        self.control_file = CONTROL_FILE  # Usar la constante del módulo control
         # Sensor mapping for the CSV columns
         self.sensors = [
             "Temperature",
@@ -164,7 +164,7 @@ class CSVPublisher:
     async def _read_control(self) -> Optional[datetime]:
         """Read last successful hour from control file."""
         try:
-            if not os.path.exists(self.control_file):
+            if not self.control_file.exists():
                 return None
             async with aiofiles.open(self.control_file, "r") as f:
                 data = json.loads(await f.read())
@@ -174,22 +174,6 @@ class CSVPublisher:
         except Exception as e:
             self.logger.error(f"Error reading control file: {e}")
             return None
-
-    async def _update_control(self, timestamp: datetime) -> None:
-        """Update last successful hour in control file."""
-        try:
-            async with aiofiles.open(self.control_file, "r") as f:
-                data = json.loads(await f.read())
-
-            if "last_successful" not in data:
-                data["last_successful"] = {}
-
-            data["last_successful"]["publisher"] = timestamp.isoformat()
-
-            async with aiofiles.open(self.control_file, "w") as f:
-                await f.write(json.dumps(data, indent=4))
-        except Exception as e:
-            self.logger.error(f"Error updating control file: {e}")
 
     def _calculate_hourly_averages(
         self, df: pd.DataFrame, target_hour: datetime
@@ -287,7 +271,13 @@ class CSVPublisher:
                     if hourly_data:
                         success = await self._send_to_endpoint(hourly_data)
                         if success:
-                            await self._update_control(process_hour)
+                            # Reemplazar llamada al método local por la función del módulo
+                            data = {
+                                "last_successful": {
+                                    "publisher": process_hour.isoformat()
+                                }
+                            }
+                            await update_control_file("last_successful", data)
                         else:
                             self.logger.warning(
                                 f"Failed to send data for hour {process_hour}"

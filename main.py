@@ -43,6 +43,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger("data_collection")  # Logger principal
 
+# Ruta del control.json usando Path
+CONTROL_FILE = Path("c:\\datasync\\control.json")
+
 
 class StationConfig(TypedDict):
     name: str
@@ -66,13 +69,24 @@ async def main() -> None:
     shutdown_event = asyncio.Event()
     tasks = []
 
+    # Asegurar que control.json existe con estado inicial
+    if not CONTROL_FILE.exists():
+        initial_state = {
+            "data_collector": "STOPPED",
+            "publisher": "STOPPED",
+            "winaqms_publisher": "STOPPED",
+            "last_successful": {},
+        }
+        async with aiofiles.open(CONTROL_FILE, "w") as f:
+            await f.write(json.dumps(initial_state, indent=4))
+
     # Configurar el manejador de señales de forma compatible con Windows
     def signal_handler(signum, frame):
         """Handle Ctrl+C signal"""
         logger.info("Ctrl+C detected, initiating shutdown...")
-        # Usar asyncio.run_coroutine_threadsafe para ejecutar código asíncrono desde un callback síncrono
+        # Usar set_result para evitar problemas con coroutines
         loop = asyncio.get_event_loop()
-        asyncio.run_coroutine_threadsafe(shutdown_event.set(), loop)
+        loop.call_soon_threadsafe(shutdown_event.set)
 
     # Registrar el manejador de señales de forma compatible con Windows
     signal.signal(signal.SIGINT, signal_handler)
@@ -223,7 +237,7 @@ async def shutdown(
 async def update_service_state(service_name: str, new_state: str) -> None:
     """Update service state while preserving last_successful data."""
     try:
-        async with aiofiles.open("control.json", "r") as f:
+        async with aiofiles.open(CONTROL_FILE, "r") as f:
             data = json.loads(await f.read())
 
         # Preserve last_successful data
@@ -235,7 +249,7 @@ async def update_service_state(service_name: str, new_state: str) -> None:
         # Ensure last_successful is preserved
         data["last_successful"] = last_successful
 
-        async with aiofiles.open("control.json", "w") as f:
+        async with aiofiles.open(CONTROL_FILE, "w") as f:
             await f.write(json.dumps(data, indent=4))
 
     except Exception as e:
