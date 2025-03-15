@@ -17,3 +17,6 @@ data
 
 # log files
 logs
+
+# vscode settings
+.vscode
