@@ -272,7 +272,7 @@ class CSVPublisher:
         current_hour = now.replace(minute=0, second=0, microsecond=0)
         process_hour = last_hour + timedelta(hours=1)
 
-        while process_hour <= current_hour:
+        while process_hour < current_hour:
             try:
                 year, month, day = (
                     process_hour.strftime("%Y"),
