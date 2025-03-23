@@ -39,6 +39,12 @@ SHOW_WINDOW_FLAG = False
 EXIT_APP_FLAG = False
 
 
+class AppWindow(tk.Tk):
+    def __init__(self):
+        super().__init__()
+        self.widget_refs = {}
+
+
 def create_app(
     collector,
     publisher,
@@ -57,7 +63,7 @@ def create_app(
         The main window instance
     """
     # Crear la ventana principal
-    window = tk.Tk()
+    window = AppWindow()
     window.title("Sistema de Monitoreo Ambiental")
     window.geometry("800x600")
 
@@ -85,9 +91,11 @@ def create_app(
     logs_tab, logs_text = create_logs_tab(notebook)
 
     # Almacenar referencias a los frames y widgets importantes
-    window.services_frame = services_frame
-    window.measurements_frame = measurements_frame
-    window.logs_text = logs_text
+    window.widget_refs = {
+        'services_frame': services_frame,
+        'measurements_frame': measurements_frame,
+        'logs_text': logs_text
+    }
 
     # Agregar las pestañas al notebook
     notebook.add(services_tab, text="Servicios")
@@ -254,9 +262,9 @@ async def run_app(window, collector, publisher, winaqms_publisher):
     ui_update_task = asyncio.create_task(
         update_ui(
             window,
-            window.services_frame,
-            window.measurements_frame,
-            window.logs_text,
+            window.widget_refs['services_frame'],
+            window.widget_refs['measurements_frame'],
+            window.widget_refs['logs_text'],
             collector,
             publisher,
             winaqms_publisher,
