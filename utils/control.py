@@ -6,8 +6,11 @@ from typing import Union
 
 logger = logging.getLogger(__name__)
 
-# Ruta del control.json
-CONTROL_FILE = Path("c:\\datasync\\control.json")
+# Obtener ruta raíz del repo
+ROOT_DIR = Path(__file__).parent.parent
+
+# Ruta del control.json relativa al repo
+CONTROL_FILE = ROOT_DIR / "control.json"
 
 
 async def update_control_file(service_name: str, new_state: Union[str, dict]) -> None:

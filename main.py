@@ -26,6 +26,7 @@ from services import (
 )
 from drivers import DavisVantagePro2
 from ui import create_app, run_app
+from utils.control import update_control_file, initialize_control_file
 
 # Crear la carpeta 'logs' si no existe
 log_dir = "logs"
@@ -69,16 +70,8 @@ async def main() -> None:
     shutdown_event = asyncio.Event()
     tasks = []
 
-    # Asegurar que control.json existe con estado inicial
-    if not CONTROL_FILE.exists():
-        initial_state = {
-            "data_collector": "STOPPED",
-            "publisher": "STOPPED",
-            "winaqms_publisher": "STOPPED",
-            "last_successful": {},
-        }
-        async with aiofiles.open(CONTROL_FILE, "w") as f:
-            await f.write(json.dumps(initial_state, indent=4))
+    # Inicializar control.json si no existe
+    await initialize_control_file()
 
     # Configurar el manejador de señales de forma compatible con Windows
     def signal_handler(signum, frame):
@@ -129,9 +122,9 @@ async def main() -> None:
             winaqms_publisher = WinAQMSPublisher(logger=logger)
 
             # Escribir estado inicial en control.json
-            await update_service_state("data_collector", "RUNNING")
-            await update_service_state("publisher", "RUNNING")
-            await update_service_state("winaqms_publisher", "RUNNING")
+            await update_control_file("data_collector", "RUNNING")
+            await update_control_file("publisher", "RUNNING")
+            await update_control_file("winaqms_publisher", "RUNNING")
 
             with open("control.json", "r") as f:
                 control = json.load(f)
@@ -222,9 +215,9 @@ async def shutdown(
                 winaqms_publisher.state = PublisherState.STOPPED
 
         # 2. Update control.json for persistence and external control
-        await update_service_state("data_collector", "STOPPED")
-        await update_service_state("publisher", "STOPPED")
-        await update_service_state("winaqms_publisher", "STOPPED")
+        await update_control_file("data_collector", "STOPPED")
+        await update_control_file("publisher", "STOPPED")
+        await update_control_file("winaqms_publisher", "STOPPED")
 
         # 3. Give time for tasks to finish gracefully
         await asyncio.sleep(1)
@@ -232,28 +225,6 @@ async def shutdown(
         logger.info("All services stopped")
     except Exception as e:
         logger.error(f"Error during shutdown: {e}", exc_info=True)
-
-
-async def update_service_state(service_name: str, new_state: str) -> None:
-    """Update service state while preserving last_successful data."""
-    try:
-        async with aiofiles.open(CONTROL_FILE, "r") as f:
-            data = json.loads(await f.read())
-
-        # Preserve last_successful data
-        last_successful = data.get("last_successful", {})
-
-        # Update only the service state
-        data[service_name] = new_state
-
-        # Ensure last_successful is preserved
-        data["last_successful"] = last_successful
-
-        async with aiofiles.open(CONTROL_FILE, "w") as f:
-            await f.write(json.dumps(data, indent=4))
-
-    except Exception as e:
-        logger.error(f"Error updating control file: {e}")
 
 
 if __name__ == "__main__":
