@@ -7,7 +7,6 @@ DataCollector and Publisher services using a control file.
 
 import os
 import asyncio
-import aiofiles
 import json
 import logging
 import sys
