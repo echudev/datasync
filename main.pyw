@@ -24,7 +24,7 @@ from services import (
     WinAQMSPublisher,
 )
 from drivers import DavisVantagePro2
-from ui import create_app, run_app
+from gui import create_app, run_app
 from utils.control import update_control_file, initialize_control_file
 
 # Crear la carpeta 'logs' si no existe
