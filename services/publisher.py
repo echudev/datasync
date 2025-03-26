@@ -261,7 +261,6 @@ class CSVPublisher:
 
     async def _execute_publish_cycle(self) -> None:
         """Execute publish cycle with hour control."""
-        self.logger.info("Executing publish cycle...")
         now = datetime.now()
         last_hour = await self._read_control()
 
