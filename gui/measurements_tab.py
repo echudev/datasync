@@ -6,7 +6,7 @@ This module contains the functions to create and manage the measurements tab.
 
 import tkinter as tk
 from tkinter import ttk
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 
 
 class SensorBox(ttk.Frame):
@@ -138,7 +138,7 @@ class MeasurementsDisplay:
                 self.air_sensors[key].update_wad(value)
 
 
-def create_measurements_tab(notebook: ttk.Notebook) -> tuple[ttk.Frame, MeasurementsDisplay]:
+def create_measurements_tab(notebook: ttk.Notebook) -> Tuple[ttk.Frame, MeasurementsDisplay]:
     """
     Create the measurements tab.
     
