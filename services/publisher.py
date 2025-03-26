@@ -250,10 +250,10 @@ class CSVPublisher:
                     json=api_payload,
                     raise_for_status=True,
                 ) as response:
-                    response_text = await response.text()
-                    self.logger.info(
-                        f"Data sent successfully: {data['timestamp']}, Response: {response_text[:100]}"
-                    )
+                    # response_text = await response.text()
+                    # self.logger.info(
+                    #     f"Data sent successfully: {data['timestamp']}, Response: {response_text[:100]}"
+                    # )
                     return True
         except Exception as e:
             self.logger.error(f"Unexpected error sending data: {str(e)}")

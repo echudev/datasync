@@ -257,10 +257,10 @@ class WinAQMSPublisher:
                     json=api_payload,
                     raise_for_status=True,
                 ) as response:
-                    response_text = await response.text()
-                    self.logger.info(
-                        f"WinAqms data: {sensor_data['timestamp']}, sent successfully to: {response_text[:100]}"
-                    )
+                    # response_text = await response.text()
+                    # self.logger.info(
+                    #     f"WinAqms data: {sensor_data['timestamp']}, sent successfully to: {response_text[:100]}"
+                    # )
                     return True
         except Exception as e:
             self.logger.error(f"Error sending data to endpoint: {e}")
