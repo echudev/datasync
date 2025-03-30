@@ -9,7 +9,6 @@ import asyncio
 import logging
 from abc import ABC, abstractmethod
 from collections import defaultdict
-from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
@@ -19,26 +18,11 @@ import pandas as pd
 from tenacity import retry, stop_after_attempt, wait_fixed
 
 
-# Tipado más estricto para el buffer
-class BufferEntry(TypedDict):
-    data: Dict[str, float]
-    count: int
-
-
 # Estado del recolector
 class CollectorState(Enum):
     RUNNING = 1
     STOPPING = 2
     STOPPED = 3
-
-
-@dataclass
-class SensorData:
-    """Class for storing sensor data with timestamp."""
-
-    timestamp: datetime
-    values: Dict[str, float] = field(default_factory=dict)
-
 
 class SensorConfig(TypedDict):
     """Type definition for sensor configuration."""
