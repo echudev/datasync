@@ -159,6 +159,32 @@ async def main() -> None:
                     run_app(window, collector, publisher, winaqms_publisher)
                 )
             )
+            
+            async def monitor_service_states():
+                """Monitor service states and restart tasks if needed."""
+                while not shutdown_event.is_set():
+                    with open("control.json", "r") as f:
+                        control = json.load(f)
+
+                    # Reiniciar DataCollector si está en RUNNING
+                    if control.get("data_collector", "STOPPED").upper() == "RUNNING" and collector.state != CollectorState.RUNNING:
+                        collector.state = CollectorState.RUNNING
+                        tasks.append(asyncio.create_task(collector.collect_data_loop()))
+
+                    # Reiniciar Publisher si está en RUNNING
+                    if control.get("publisher", "STOPPED").upper() == "RUNNING" and publisher.state != PublisherState.RUNNING:
+                        publisher.state = PublisherState.RUNNING
+                        tasks.append(asyncio.create_task(publisher.run()))
+
+                    # Reiniciar WinAQMS Publisher si está en RUNNING
+                    if control.get("winaqms_publisher", "STOPPED").upper() == "RUNNING" and winaqms_publisher.state != PublisherState.RUNNING:
+                        winaqms_publisher.state = PublisherState.RUNNING
+                        tasks.append(asyncio.create_task(winaqms_publisher.run()))
+
+                    await asyncio.sleep(2)  # Monitorear cada 2 segundos
+
+            # Agregar la tarea de monitoreo
+            tasks.append(asyncio.create_task(monitor_service_states()))
 
             try:
                 # Esperar a que se active el evento de cierre o terminen las tareas
