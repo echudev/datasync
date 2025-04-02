@@ -278,13 +278,18 @@ class CSVPublisher:
                     process_hour.strftime("%m"),
                     process_hour.strftime("%d"),
                 )
-                df = await self._read_csv(year, month, day)
+                try:
+                    df = await self._read_csv(year, month, day)
+                except FileNotFoundError:
+                    self.logger.warning(f"No data file found for {year}/{month}/{day}, skipping hour {process_hour.hour}")
+                    process_hour += timedelta(hours=1)
+                    continue
+                
                 if df is not None:
                     hourly_data = self._calculate_hourly_averages(df, process_hour)
                     if hourly_data:
                         success = await self._send_to_endpoint(hourly_data)
                         if success:
-                            # Reemplazar llamada al método local por la función del módulo
                             data = {
                                 "last_successful": {
                                     "publisher": process_hour.isoformat()
@@ -292,9 +297,7 @@ class CSVPublisher:
                             }
                             await update_control_file("last_successful", data)
                         else:
-                            self.logger.warning(
-                                f"Failed to send data for hour {process_hour}"
-                            )
+                            self.logger.warning(f"Failed to send data for hour {process_hour}")
                             break
 
                 process_hour += timedelta(hours=1)
