@@ -9,7 +9,7 @@ import asyncio
 import logging
 from abc import ABC, abstractmethod
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import Enum
 from pathlib import Path
 from typing import Dict, List, Any, TypedDict, Optional
@@ -112,9 +112,9 @@ class DataCollector:
             self.logger.info(f"Stopped data collection for sensor {name}")
 
     async def process_and_save_data(
-        self, output_interval: float = 60.0, batch_size: int = 10
+        self, output_interval: float = 60.0
     ) -> None:
-        """Process collected data and save in batches, forcing save at hour boundaries."""
+        """Process collected data and save each minute."""
         self.logger.info("Starting data processing task")
         try:
             while await self.get_state() == CollectorState.RUNNING:
@@ -122,24 +122,12 @@ class DataCollector:
 
                 now = datetime.now()
                 process_time = now.replace(second=0, microsecond=0)
-                # Retroceder un minuto, manejando el cambio de hora y día
-                if process_time.minute == 0:
-                    if process_time.hour == 0:
-                        process_time = process_time.replace(
-                            day=process_time.day - 1, hour=23, minute=59
-                        )
-                    else:
-                        process_time = process_time.replace(
-                            hour=process_time.hour - 1, minute=59
-                        )
-                else:
-                    process_time = process_time.replace(minute=process_time.minute - 1)
+                process_time = process_time - timedelta(minutes=1)
                 timestamp_key = process_time.strftime("%Y-%m-%d %H:%M")
 
                 async with self.data_lock:
                     if timestamp_key in self.data_buffer:
                         buffer_entry = self.data_buffer[timestamp_key]
-                        # Redondear promedios: 1 decimal para todo menos RainRate (2 decimales)
                         averages = {
                             k: round(v / buffer_entry["count"], 1)
                             if k != "RainRate"
@@ -150,13 +138,9 @@ class DataCollector:
                             {"timestamp": timestamp_key, **averages}
                         )
                         del self.data_buffer[timestamp_key]
-
-                if process_time.minute == 59 and self.data_to_save:
-                    await self._save_batch_data(self.data_to_save)
-                    self.data_to_save.clear()
-                elif len(self.data_to_save) >= batch_size:
-                    await self._save_batch_data(self.data_to_save)
-                    self.data_to_save.clear()
+                        # Guardar inmediatamente los datos del minuto
+                        await self._save_batch_data(self.data_to_save)
+                        self.data_to_save.clear()
 
         except Exception as e:
             self.logger.error(f"Error in data processing: {e}")

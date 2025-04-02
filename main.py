@@ -139,7 +139,7 @@ async def main() -> None:
             # Agregar tarea de procesamiento
             tasks.append(
                 asyncio.create_task(
-                    collector.process_and_save_data(output_interval=60.0, batch_size=10)
+                    collector.process_and_save_data(output_interval=60.0)
                 )
             )
 
