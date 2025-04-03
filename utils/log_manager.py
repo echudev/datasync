@@ -2,6 +2,16 @@
 Log Manager Module
 
 This module provides a class to manage application logs.
+
+Loggin Levels:
+
+DEBUG (10): Used for debugging messages.
+INFO (20): Logs events within expected program behavior.
+WARNING (30): Logs unexpected events that may not be severe errors.
+ERROR (40): Logs unexpected failures in the program.
+CRITICAL (50): Logs critical errors that may cause program termination
+
+The logger will only display logs from the selected level and above.
 """
 
 import logging
