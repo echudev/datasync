@@ -5,10 +5,8 @@ Main entry point for the data collection system with a Tkinter GUI to control
 DataCollector and Publisher services using a control file.
 """
 
-import os
 import asyncio
 import json
-import logging
 import sys
 import signal
 from pathlib import Path
@@ -26,22 +24,12 @@ from services import (
 from drivers import DavisVantagePro2
 from gui import create_app, run_app
 from utils.control import update_control_file, initialize_control_file
+from utils.log_manager import LogManager
 
-# Crear la carpeta 'logs' si no existe
-log_dir = "logs"
-if not os.path.exists(log_dir):
-    os.makedirs(log_dir)
-
-# Configure logging (centralizado para todos los módulos)
-logging.basicConfig(
-    level=logging.INFO,  # Nivel INFO para eventos clave y errores
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler(os.path.join(log_dir, "data_collection.log")),
-    ],
-)
-logger = logging.getLogger("data_collection")  # Logger principal
+# Initialize logging using LogManager
+log_manager = LogManager()
+log_manager.initialize_logging()
+logger = log_manager.logger
 
 
 class StationConfig(TypedDict):
