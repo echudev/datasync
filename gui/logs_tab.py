@@ -4,14 +4,12 @@ Logs Tab Module
 This module contains the functions to create and manage the logs tab.
 """
 
-import os
-import logging
 import tkinter as tk
-from tkinter import ttk, scrolledtext
+from tkinter import ttk, scrolledtext, messagebox
+from utils.log_manager import LogManager
 
-# Obtener el logger
-logger = logging.getLogger("data_collection")
-
+# Crear instancia del LogManager
+log_manager = LogManager()
 
 def create_logs_tab(notebook):
     """
@@ -37,31 +35,39 @@ def create_logs_tab(notebook):
     logs_text = scrolledtext.ScrolledText(logs_tab, wrap=tk.WORD)
     logs_text.pack(pady=10, fill=tk.BOTH, expand=True)
     
-    # Botón para refrescar logs manualmente
+    # Botones de control
+    buttons_frame = ttk.Frame(logs_tab)
+    buttons_frame.pack(pady=5)
+    
     ttk.Button(
-        logs_tab,
+        buttons_frame,
         text="Refrescar Logs",
         command=lambda: refresh_logs(logs_text)
-    ).pack(pady=5)
-    
+    ).pack(side=tk.LEFT, padx=5)
+
+    ttk.Button(
+        buttons_frame,
+        text="Eliminar Logs",
+        command=clear_logs_file
+    ).pack(side=tk.RIGHT, padx=5)
+
     return logs_tab, logs_text
 
-
 def refresh_logs(text_widget):
-    """
-    Refresh the logs in the text widget.
-    
-    Args:
-        text_widget: The text widget to update
-    """
+    """Refresh the logs in the text widget."""
     try:
-        log_dir = "logs"
-        log_file = os.path.join(log_dir, "data_collection.log")
-        if os.path.exists(log_file):
-            with open(log_file, "r") as f:
-                logs_content = f.read()
-                text_widget.delete(1.0, tk.END)
-                text_widget.insert(tk.END, logs_content)
-                text_widget.see(tk.END)  # Desplazar al final
+        logs_content = log_manager.read_logs()
+        text_widget.delete(1.0, tk.END)
+        text_widget.insert(tk.END, logs_content)
+        text_widget.see(tk.END)
     except Exception as e:
-        logger.error(f"Error refreshing logs: {e}") 
+        messagebox.showerror("Error", f"Error al refrescar los logs: {e}")
+
+def clear_logs_file():
+    """Delete the logs file after confirmation."""
+    if messagebox.askyesno("Confirmar eliminación", "¿Está seguro que desea eliminar los logs?"):
+        success, message = log_manager.clear_logs()
+        if success:
+            messagebox.showinfo("Éxito", message)
+        else:
+            messagebox.showerror("Error", message)
