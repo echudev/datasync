@@ -257,10 +257,10 @@ class WinAQMSPublisher:
                     json=api_payload,
                     raise_for_status=True,
                 ) as response:
-                    # response_text = await response.text()
-                    # self.logger.info(
-                    #     f"WinAqms data: {sensor_data['timestamp']}, sent successfully to: {response_text[:100]}"
-                    # )
+                    response_text = await response.text()
+                    self.logger.info(
+                        f"WinAqms data: {sensor_data['timestamp']}, sent successfully to: {response_text[:100]}"
+                    )
                     return True
         except Exception as e:
             self.logger.error(f"Error sending data to endpoint: {e}")
@@ -285,7 +285,12 @@ class WinAQMSPublisher:
                     process_hour.strftime("%m"),
                     process_hour.strftime("%d"),
                 )
-                df = await self._read_wad_file(year, month, day)
+                try:
+                    df = await self._read_wad_file(year, month, day)
+                except FileNotFoundError:
+                    self.logger.warning(f"No data file found for {year}/{month}/{day}, skipping hour {process_hour.hour}")
+                    process_hour += timedelta(hours=1)
+                    continue
 
                 hourly_data = self._calculate_hourly_averages(df, process_hour)
                 if hourly_data:
