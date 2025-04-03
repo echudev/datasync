@@ -41,12 +41,6 @@ class SensorData(TypedDict):
     RS: Optional[float]
 
 
-class ApiPayload(TypedDict):
-    apiKey: str
-    origen: str
-    data: SensorData
-
-
 class CSVPublisher:
     """Class to handle publishing hourly CSV data to an external endpoint."""
 

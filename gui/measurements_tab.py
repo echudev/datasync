@@ -46,8 +46,8 @@ class SensorBox(ttk.Frame):
             font=("Arial", 10)
         ).pack()
         
-        # Average value from WAD
-        self.wad_var = tk.StringVar(value="--")
+        # Average value from csv fil
+        self.average_var = tk.StringVar(value="--")
         ttk.Label(
             self,
             text="1-min avg:",
@@ -55,7 +55,7 @@ class SensorBox(ttk.Frame):
         ).pack(pady=(5, 0))
         ttk.Label(
             self,
-            textvariable=self.wad_var,
+            textvariable=self.average_var,
             font=("Arial", 12)
         ).pack()
     
@@ -66,16 +66,16 @@ class SensorBox(ttk.Frame):
         else:
             self.realtime_var.set("--")
     
-    def update_wad(self, value: Optional[float]) -> None:
-        """Update the WAD average value display."""
+    def update_average(self, value: Optional[float]) -> None:
+        """Update the average value display."""
         if value is not None:
-            self.wad_var.set(f"{value:.2f}")
+            self.average_var.set(f"{value:.2f}")
         else:
-            self.wad_var.set("--")
+            self.average_var.set("--")
 
 
 class MeasurementsDisplay:
-    """Manages the display and updates of all sensor measurements."""
+    """Frame personalizado para mostrar las mediciones de los sensores."""
     
     def __init__(self, frame: ttk.Frame):
         self.frame = frame
@@ -84,10 +84,10 @@ class MeasurementsDisplay:
         frame.grid_columnconfigure((0,1,2,3), weight=1, uniform="column")
         frame.grid_rowconfigure((0,1,2,3), weight=1, uniform="row")
         
-        # Meteorological sensors (Davis VP2)
+        # Meteorological sensors (csv file)
         self.meteo_sensors = {
-            "Temperature": SensorBox(frame, "Temp", "°C"),
-            "Humidity": SensorBox(frame, "HR", "%"),
+            "Temperature": SensorBox(frame, "Temp Ext", "°C"),
+            "Humidity": SensorBox(frame, "HR Ext", "%"),
             "Pressure": SensorBox(frame, "PA", "hPa"),
             "WindSpeed": SensorBox(frame, "Vel Viento", "m/s"),
             "WindDirection": SensorBox(frame, "Dir Viento", "°"),
@@ -98,12 +98,12 @@ class MeasurementsDisplay:
         
         # Air quality sensors (WAD file)
         self.air_sensors = {
-            "CO": SensorBox(frame, "CO", "ppm"),
-            "NO": SensorBox(frame, "NO", "ppb"),
-            "NO2": SensorBox(frame, "NO₂", "ppb"),
-            "NOx": SensorBox(frame, "NOₓ", "ppb"),
-            "O3": SensorBox(frame, "O₃", "ppb"),
-            "PM10": SensorBox(frame, "PM₁₀", "µg/m³"),
+            "C1": SensorBox(frame, "CO", "ppm"),
+            "C2": SensorBox(frame, "NO", "ppb"),
+            "C3": SensorBox(frame, "NO₂", "ppb"),
+            "C4": SensorBox(frame, "NOₓ", "ppb"),
+            "C5": SensorBox(frame, "O₃", "ppb"),
+            "C6": SensorBox(frame, "PM₁₀", "µg/m³"),
         }
         
         # Place sensors in grid
@@ -135,7 +135,7 @@ class MeasurementsDisplay:
         """Update air quality sensor displays with WAD file data."""
         for key, value in data.items():
             if key in self.air_sensors:
-                self.air_sensors[key].update_wad(value)
+                self.air_sensors[key].update_average(value)
 
 
 def create_measurements_tab(notebook: ttk.Notebook) -> Tuple[ttk.Frame, MeasurementsDisplay]:
@@ -154,9 +154,14 @@ def create_measurements_tab(notebook: ttk.Notebook) -> Tuple[ttk.Frame, Measurem
     # Title
     ttk.Label(
         measurements_tab, 
-        text="Real-time Measurements", 
+        text="Mediciones Tiempo Real", 
         font=("Arial", 14, "bold")
     ).pack(pady=10)
+    ttk.Label(
+        measurements_tab, 
+        text="Promedios Minutales", 
+        font=("Arial", 10, "bold")
+    ).pack()
     
     # Create the measurements frame
     measurements_frame = ttk.Frame(measurements_tab)

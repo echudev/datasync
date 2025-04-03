@@ -39,13 +39,6 @@ class SensorData(TypedDict):
     O3: Optional[float]
     PM10: Optional[int]
 
-
-class ApiPayload(TypedDict):
-    apiKey: str
-    origen: str
-    data: SensorData
-
-
 class WinAQMSPublisher:
     """Class to handle publishing hourly WinAQMS data to an external endpoint."""
 
@@ -188,10 +181,19 @@ class WinAQMSPublisher:
             # Filter data for target hour
             hour_start = target_hour.replace(minute=0, second=0, microsecond=0)
             hour_end = hour_start + timedelta(hours=1)
+            
+            # Log timeframe being processed
+            self.logger.debug(f"Processing data from {hour_start} to {hour_end}")
+
+            # Log unique timestamps before filtering
+            self.logger.debug(f"Unique timestamps before filtering: {df['Date_Time'].unique()}")
 
             df = df[
                 (df["Date_Time"] >= hour_start) & (df["Date_Time"] < hour_end)
             ].copy()
+
+            # Log number of records after filtering
+            self.logger.debug(f"Number of records for hour {hour_start.hour}: {len(df)}")
 
             if df.empty:
                 return None
@@ -211,11 +213,16 @@ class WinAQMSPublisher:
                 if sensor in df.columns:
                     values = pd.to_numeric(df[sensor], errors="coerce")
                     if not values.empty and not values.isna().all():
+                        # Log raw values for C6 (PM10)
+                        if sensor == "C6":
+                            self.logger.debug(f"C6 raw values: {values.tolist()}")
+                        
                         avg_value = values.mean()
                         if sensor in ("C1", "C2", "C3", "C4"):
                             avg_value = round(float(avg_value), 3)
                         elif sensor == "C6":
                             avg_value = round(avg_value)
+                            self.logger.debug(f"C6 calculated average: {avg_value} for hour {hour_start}")
                         else:
                             avg_value = round(avg_value, 2)
                         result[self.sensor_map[sensor]] = avg_value
@@ -224,6 +231,8 @@ class WinAQMSPublisher:
                 else:
                     result[self.sensor_map[sensor]] = None
 
+            # Log final result
+            self.logger.debug(f"Calculated averages for {hour_start}: {result}")
             return result
 
         except Exception as e:
@@ -268,6 +277,7 @@ class WinAQMSPublisher:
 
     async def _execute_publish_cycle(self) -> None:
         """Execute publish cycle with hour control."""
+        self.logger.debug("Executing publish cycle (publish_cycle method)")
         now = datetime.now()
         last_hour = await self._read_control()
 
@@ -277,8 +287,10 @@ class WinAQMSPublisher:
         # Process all hours from last successful until current
         current_hour = now.replace(minute=0, second=0, microsecond=0)
         process_hour = last_hour + timedelta(hours=1)
+        self.logger.debug(f"Last successful hour: {last_hour}, Current hour: {current_hour}")
 
         while process_hour < current_hour:
+            self.logger.debug(f"Processing hour: {process_hour}, Current hour: {current_hour}")
             try:
                 year, month, day = (
                     process_hour.strftime("%Y"),
@@ -293,6 +305,7 @@ class WinAQMSPublisher:
                     continue
 
                 hourly_data = self._calculate_hourly_averages(df, process_hour)
+                self.logger.debug(f"Hourly data for {process_hour}: {hourly_data}")
                 if hourly_data:
                     success = await self._send_to_endpoint(hourly_data)
                     if success:
@@ -316,24 +329,30 @@ class WinAQMSPublisher:
 
     async def run(self) -> None:
         """
-        Run the publisher asynchronously, executing at :04 of each hour.
-        First execution happens immediately, then waits for next :04 mark.
+        Run the publisher asynchronously, executing at :02 of each hour.
+        First execution happens immediately, then waits for next :02 mark.
         """
         self.logger.info("Starting WinAQMS publisher...")
         first_run = True
 
         while await self.get_state() == PublisherState.RUNNING:
+            self.logger.debug(f"winaqms_publisher while is running, current state: {self.state}")	
             try:
                 now = datetime.now()
+                self.logger.debug(f"Current time: {now}, Last execution: {self.last_execution}")
                 if first_run:
+                    self.logger.debug("First run, executing winaqms publish")
                     await self._execute_publish_cycle()
                     first_run = False
                     self.last_execution = now
+                    self.logger.debug(f"First run completed, last execution set to: {self.last_execution}")
                 else:
-                    current_hour = now.replace(minute=4, second=0, microsecond=0)
+                    current_hour = now.replace(minute=2, second=0, microsecond=0)
+                    self.logger.debug(f"Current hour for execution: {current_hour}")
                     if now >= current_hour and (
                         not self.last_execution or self.last_execution.hour != now.hour
                     ):
+                        self.logger.debug("Executing publish cycle (run loop)")
                         await self._execute_publish_cycle()
                         self.last_execution = now
                 await asyncio.sleep(self.check_interval)

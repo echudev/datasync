@@ -42,7 +42,7 @@ async def initialize_control_file() -> None:
     if not CONTROL_FILE.exists():
         initial_state = {
             "data_collector": "STOPPED",
-            "publisher": "STOPPED",
+            "csv_publisher": "STOPPED",
             "winaqms_publisher": "STOPPED",
             "last_successful": {},
         }

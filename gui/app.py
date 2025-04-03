@@ -10,20 +10,19 @@ import json
 import logging
 import tkinter as tk
 from tkinter import ttk, scrolledtext
-import glob
-import pandas as pd
-from datetime import datetime
 import pystray
+
+logging.getLogger('PIL.Image').setLevel(logging.WARNING)
 from PIL import Image
+
 import time
 import threading
 from typing import Optional
 
-from services import (
-    CollectorState,
-    PublisherState,
-)
-
+from services.data_collector import CollectorState
+from services.csv_publisher import PublisherState
+from services.winaqms_publisher import PublisherState as WPublisherState
+from utils.control import update_control_file
 from .services_tab import create_services_tab
 from .measurements_tab import create_measurements_tab
 from .logs_tab import create_logs_tab
@@ -47,7 +46,7 @@ class AppWindow(tk.Tk):
 
 def create_app(
     collector,
-    publisher,
+    csv_publisher,
     winaqms_publisher,
     shutdown_event: Optional[asyncio.Event] = None,
 ):
@@ -56,7 +55,7 @@ def create_app(
 
     Args:
         collector: The data collector instance
-        publisher: The CSV publisher instance
+        csv_publisher: The CSV publisher instance
         winaqms_publisher: The WinAQMS publisher instance
 
     Returns:
@@ -64,8 +63,8 @@ def create_app(
     """
     # Crear la ventana principal
     window = AppWindow()
-    window.title("Sistema de Monitoreo Ambiental")
-    window.geometry("800x600")
+    window.title(" DataSync | GCBA - Red de Calidad del Aire")
+    window.geometry("800x700")
 
     # Configurar el ícono de la aplicación (si existe)
     try:
@@ -79,15 +78,18 @@ def create_app(
     except Exception as e:
         logger.error(f"Error loading icon: {e}")
 
-    # Crear un notebook (pestañas)
+    # Crear un notebook (menu navegador)
     notebook = ttk.Notebook(window)
     notebook.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
-    # Crear las pestañas
+    # Crear las pestañas de servicios, mediciones y logs
+    # Crear la pestaña de servicios
     services_tab, services_frame = create_services_tab(
-        notebook, collector, publisher, winaqms_publisher
+        notebook, collector, csv_publisher, winaqms_publisher
     )
+    # Crear la pestaña de mediciones
     measurements_tab, measurements_frame = create_measurements_tab(notebook)
+    # Crear la pestaña de logs
     logs_tab, logs_text = create_logs_tab(notebook)
 
     # Almacenar referencias a los frames y widgets importantes
@@ -114,7 +116,7 @@ def create_app(
 
         # Detener los servicios
         try:
-            await shutdown(collector, publisher, winaqms_publisher)
+            await shutdown(collector, csv_publisher, winaqms_publisher)
         except Exception as e:
             logger.error(f"Error shutting down services: {e}")
 
@@ -245,14 +247,14 @@ def set_exit_flag(icon=None):
     tray_manager.stop()
 
 
-async def run_app(window, collector, publisher, winaqms_publisher):
+async def run_app(window, collector, csv_publisher, winaqms_publisher):
     """
     Run the application main loop.
 
     Args:
         window: The main window instance
         collector: The data collector instance
-        publisher: The CSV publisher instance
+        csv_publisher: The CSV publisher instance
         winaqms_publisher: The WinAQMS publisher instance
     """
     # Iniciar el bucle de eventos de Tkinter
@@ -266,7 +268,7 @@ async def run_app(window, collector, publisher, winaqms_publisher):
             window.widget_refs['measurements_frame'],
             window.widget_refs['logs_text'],
             collector,
-            publisher,
+            csv_publisher,
             winaqms_publisher,
         )
     )
@@ -307,13 +309,13 @@ async def run_app(window, collector, publisher, winaqms_publisher):
         logger.info("UI loop ended")
 
 
-async def shutdown(collector, publisher, winaqms_publisher):
+async def shutdown(collector, csv_publisher, winaqms_publisher):
     """
     Perform a graceful shutdown of all services.
 
     Args:
         collector: The data collector instance
-        publisher: The CSV publisher instance
+        csv_publisher: The CSV publisher instance
         winaqms_publisher: The WinAQMS publisher instance
     """
     logger.info("Shutting down services...")
@@ -322,22 +324,22 @@ async def shutdown(collector, publisher, winaqms_publisher):
     if collector:
         collector.state = CollectorState.STOPPED
 
-    if publisher:
-        if hasattr(publisher, "state"):  # Check if publisher has state attribute
-            publisher.state = PublisherState.STOPPED
+    if csv_publisher:
+        if hasattr(csv_publisher, "state"):  # Check if publisher has state attribute
+            csv_publisher.state = PublisherState.STOPPED
 
     if winaqms_publisher:
         if hasattr(
             winaqms_publisher, "state"
         ):  # Check if winaqms_publisher has state attribute
-            winaqms_publisher.state = PublisherState.STOPPED
+            winaqms_publisher.state = WPublisherState.STOPPED
 
     # 2. Update control.json for persistence and external control
     with open("control.json", "w") as f:
         json.dump(
             {
                 "data_collector": "STOPPED",
-                "publisher": "STOPPED",
+                "csv_publisher": "STOPPED",
                 "winaqms_publisher": "STOPPED",
             },
             f,
@@ -356,7 +358,7 @@ async def update_ui(
     measurements_frame: ttk.Frame,
     logs_text: scrolledtext.ScrolledText,
     collector,
-    publisher,
+    csv_publisher,
     winaqms_publisher,
 ) -> None:
     """
@@ -368,7 +370,7 @@ async def update_ui(
         measurements_frame: The measurements tab frame
         logs_text: The logs text widget
         collector: The data collector instance
-        publisher: The CSV publisher instance
+        csv_publisher: The CSV publisher instance
         winaqms_publisher: The WinAQMS publisher instance
     """
     # Crear los widgets de servicios solo una vez
@@ -380,9 +382,12 @@ async def update_ui(
         widget.destroy()
 
     # Crear widgets para servicios
-    for service in ["data_collector", "publisher", "winaqms_publisher"]:
+    for service in ["data_collector", "csv_publisher", "winaqms_publisher"]:
         try:
-            service_frame = ttk.Frame(services_frame)
+            # style = ttk.Style()
+            # style.configure('Red.TFrame', borderwidth=1, relief='solid', background='red')
+            
+            service_frame = ttk.Frame(services_frame, style='Red.TFrame')
             service_frame.pack(pady=5, fill=tk.X)
 
             # Indicador visual (círculo de color)
@@ -404,7 +409,7 @@ async def update_ui(
                 text="Iniciar",
                 command=lambda s=service: asyncio.create_task(
                     update_control(
-                        s, "RUNNING", collector, publisher, winaqms_publisher
+                        s, "RUNNING", collector, csv_publisher, winaqms_publisher
                     )
                 ),
             ).grid(row=0, column=2, padx=5)
@@ -414,43 +419,12 @@ async def update_ui(
                 text="Detener",
                 command=lambda s=service: asyncio.create_task(
                     update_control(
-                        s, "STOPPED", collector, publisher, winaqms_publisher
+                        s, "STOPPED", collector, csv_publisher, winaqms_publisher
                     )
                 ),
             ).grid(row=0, column=3, padx=5)
         except Exception as e:
             logger.error(f"Error creating service controls: {e}")
-
-    # Crear widgets para mediciones
-    wad_data_frame = ttk.LabelFrame(measurements_frame, text="Datos WAD (WinAQMS)")
-    wad_data_frame.pack(pady=5, fill=tk.BOTH, expand=True)
-
-    csv_data_frame = ttk.LabelFrame(measurements_frame, text="Datos CSV")
-    csv_data_frame.pack(pady=5, fill=tk.BOTH, expand=True)
-
-    # Crear tabla para datos WAD
-    wad_tree = ttk.Treeview(
-        wad_data_frame,
-        columns=("sensor", "value", "unit", "timestamp"),
-        show="headings",
-    )
-    wad_tree.heading("sensor", text="Sensor")
-    wad_tree.heading("value", text="Valor")
-    wad_tree.heading("unit", text="Unidad")
-    wad_tree.heading("timestamp", text="Timestamp")
-    wad_tree.pack(fill=tk.BOTH, expand=True)
-
-    # Crear tabla para datos CSV
-    csv_tree = ttk.Treeview(
-        csv_data_frame,
-        columns=("sensor", "value", "unit", "timestamp"),
-        show="headings",
-    )
-    csv_tree.heading("sensor", text="Sensor")
-    csv_tree.heading("value", text="Valor")
-    csv_tree.heading("unit", text="Unidad")
-    csv_tree.heading("timestamp", text="Timestamp")
-    csv_tree.pack(fill=tk.BOTH, expand=True)
 
     # Solo actualizar la UI, no crear nuevos widgets en cada iteración
     while True:
@@ -495,87 +469,80 @@ async def update_ui(
             except Exception as e:
                 logger.error(f"Error reading control file: {e}")
 
-            # Actualizar datos de mediciones (WAD)
+            # # Actualizar datos de mediciones (WAD)
+            # try:
+            #     if wad_tree.winfo_exists():
+            #         # Limpiar tabla
+            #         for item in wad_tree.get_children():
+            #             wad_tree.delete(item)
+
+            #         # Buscar el archivo WAD más reciente
+            #         wad_files = glob.glob("C:\\Data\\*.wad")
+            #         if wad_files:
+            #             latest_wad = max(wad_files, key=os.path.getmtime)
+            #             try:
+            #                 # Leer el archivo WAD como si fuera un CSV
+            #                 wad_df = pd.read_csv(latest_wad)
+            #                 if not wad_df.empty:
+            #                     last_row = wad_df.iloc[-1]
+            #                     timestamp = last_row.get(
+            #                         "timestamp",
+            #                         datetime.now().strftime("%Y-%m-%d %H:%M"),
+            #                     )
+
+            #                     # Mostrar cada columna como un sensor separado
+            #                     for col in wad_df.columns:
+            #                         if col != "timestamp":
+            #                             value = last_row.get(col, "N/A")
+            #                             unit = (
+            #                                 "µg/m³"
+            #                                 if "PM" in col
+            #                                 else "ppb"
+            #                                 if col in ["O3", "NO2", "SO2"]
+            #                                 else "ppm"
+            #                                 if col == "CO"
+            #                                 else "N/A"
+            #                             )
+            #                             wad_tree.insert(
+            #                                 "",
+            #                                 "end",
+            #                                 values=(col, value, unit, timestamp),
+            #                             )
+            #             except Exception as e:
+            #                 logger.error(f"Error reading WAD file: {e}")
+            # except tk.TclError:
+            #     pass  # Ignorar errores si el widget ya no existe
+            # except Exception as e:
+            #     logger.error(f"Error updating WAD data: {e}")
+
+            # Actualizar datos de mediciones tiempo real (meteo davis)
             try:
-                if wad_tree.winfo_exists():
-                    # Limpiar tabla
-                    for item in wad_tree.get_children():
-                        wad_tree.delete(item)
+                print("Updating meteo data...")
+                if collector and hasattr(collector, "data_buffer"):
+                    print("Collector has data buffer")
+                    # Obtener datos de los sensores meteorológicos
+                    data = collector.data_buffer.get("data", {})
+                    measurements_frame.update_meteo_data(data.get("data", {}))
 
-                    # Buscar el archivo WAD más reciente
-                    wad_files = glob.glob("C:\\Data\\*.wad")
-                    if wad_files:
-                        latest_wad = max(wad_files, key=os.path.getmtime)
-                        try:
-                            # Leer el archivo WAD como si fuera un CSV
-                            wad_df = pd.read_csv(latest_wad)
-                            if not wad_df.empty:
-                                last_row = wad_df.iloc[-1]
-                                timestamp = last_row.get(
-                                    "timestamp",
-                                    datetime.now().strftime("%Y-%m-%d %H:%M"),
-                                )
+            #         # Si no hay datos, usar valores por defecto para probar
+            #         # measurements_frame.update_meteo_data(
+            #         #     {
+            #         #     "Temperature":22.5, 
+            #         #      "Humidity": 45.0, 
+            #         #      "Pressure": 1013.0, 
+            #         #      "WindSpeed": 5.0, 
+            #         #      "WindDirection": 189, 
+            #         #      "RainRate": 0.0, 
+            #         #      "UV": 0.5, 
+            #         #      "SolarRadiation": 200.0
+            #         #     }
+            #         # )
 
-                                # Mostrar cada columna como un sensor separado
-                                for col in wad_df.columns:
-                                    if col != "timestamp":
-                                        value = last_row.get(col, "N/A")
-                                        unit = (
-                                            "µg/m³"
-                                            if "PM" in col
-                                            else "ppb"
-                                            if col in ["O3", "NO2", "SO2"]
-                                            else "ppm"
-                                            if col == "CO"
-                                            else "N/A"
-                                        )
-                                        wad_tree.insert(
-                                            "",
-                                            "end",
-                                            values=(col, value, unit, timestamp),
-                                        )
-                        except Exception as e:
-                            logger.error(f"Error reading WAD file: {e}")
+
             except tk.TclError:
                 pass  # Ignorar errores si el widget ya no existe
             except Exception as e:
-                logger.error(f"Error updating WAD data: {e}")
-
-            # Actualizar datos de mediciones (CSV)
-            try:
-                if csv_tree.winfo_exists():
-                    # Limpiar tabla
-                    for item in csv_tree.get_children():
-                        csv_tree.delete(item)
-
-                    # Buscar el archivo CSV más reciente
-                    csv_files = glob.glob("data/*.csv")
-                    if csv_files:
-                        latest_csv = max(csv_files, key=os.path.getmtime)
-                        try:
-                            df = pd.read_csv(latest_csv)
-                            if not df.empty:
-                                last_row = df.iloc[-1]
-                                timestamp = last_row.get(
-                                    "timestamp",
-                                    datetime.now().strftime("%Y-%m-%d %H:%M"),
-                                )
-
-                                # Mostrar cada columna como un sensor separado
-                                for col in df.columns:
-                                    if col != "timestamp":
-                                        value = last_row.get(col, "N/A")
-                                        csv_tree.insert(
-                                            "",
-                                            "end",
-                                            values=(col, value, "N/A", timestamp),
-                                        )
-                        except Exception as e:
-                            logger.error(f"Error reading CSV file: {e}")
-            except tk.TclError:
-                pass  # Ignorar errores si el widget ya no existe
-            except Exception as e:
-                logger.error(f"Error updating CSV data: {e}")
+                logger.error(f"Error en app.py intentando actualizar la real time data de la meteo: {e}")
 
             # Actualizar logs
             try:
@@ -601,7 +568,7 @@ async def update_ui(
         await asyncio.sleep(2)  # Actualizar cada 2 segundos
 
 
-async def update_control(service, state, collector, publisher, winaqms_publisher):
+async def update_control(service, state, collector, csv_publisher, winaqms_publisher):
     """
     Update the control state of a service.
 
@@ -609,7 +576,7 @@ async def update_control(service, state, collector, publisher, winaqms_publisher
         service: The service name
         state: The new state
         collector: The data collector instance
-        publisher: The CSV publisher instance
+        csv_publisher: The CSV publisher instance
         winaqms_publisher: The WinAQMS publisher instance
     """
     try:
@@ -626,26 +593,36 @@ async def update_control(service, state, collector, publisher, winaqms_publisher
         if service == "data_collector":
             if state == "STOPPED":
                 collector.state = CollectorState.STOPPED
+                update_control_file(service, state)
             elif state == "RUNNING":
                 collector.state = CollectorState.RUNNING
+                update_control_file(service, state)
+                # Reiniciar la tarea de recolección de datos
+                asyncio.create_task(collector.collect_data_loop())
 
-        elif service == "publisher" and publisher:
+        elif service == "csv_publisher" and csv_publisher:
             if state == "STOPPED":
-                if hasattr(publisher, "state"):
-                    publisher.state = PublisherState.STOPPED
-                logger.info("Publisher stop requested via GUI")
+                if hasattr(csv_publisher, "state"):
+                    csv_publisher.state = PublisherState.STOPPED
+                    update_control_file(service, state)
             elif state == "RUNNING":
-                if hasattr(publisher, "state"):
-                    publisher.state = PublisherState.RUNNING
+                if hasattr(csv_publisher, "state"):
+                    csv_publisher.state = PublisherState.RUNNING
+                    update_control_file(service, state)
+                    # Reiniciar la tarea del publisher
+                    asyncio.create_task(csv_publisher.run())
 
         elif service == "winaqms_publisher" and winaqms_publisher:
             if state == "STOPPED":
                 if hasattr(winaqms_publisher, "state"):
-                    winaqms_publisher.state = PublisherState.STOPPED
-                logger.info("WinAQMS Publisher stop requested via GUI")
+                    winaqms_publisher.state = WPublisherState.STOPPED
+                    update_control_file(service, state)
             elif state == "RUNNING":
                 if hasattr(winaqms_publisher, "state"):
-                    winaqms_publisher.state = PublisherState.RUNNING
+                    winaqms_publisher.state = WPublisherState.RUNNING
+                    update_control_file(service, state)
+                    # Reiniciar la tarea del WinAQMS publisher
+                    asyncio.create_task(winaqms_publisher.run())
 
     except Exception as e:
         logger.error(f"Error updating control file for {service}: {e}")

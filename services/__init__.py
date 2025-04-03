@@ -1,5 +1,5 @@
 from .data_collector import DataCollector, SensorConfig, CollectorState, Sensor
-from .publisher import CSVPublisher, PublisherState
+from .csv_publisher import CSVPublisher, PublisherState
 from .winaqms_publisher import WinAQMSPublisher
 
 __all__ = [

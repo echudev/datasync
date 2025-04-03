@@ -12,15 +12,9 @@ import signal
 from pathlib import Path
 from typing import List, TypedDict
 
-from services import (
-    DataCollector,
-    SensorConfig,
-    CollectorState,
-    Sensor,
-    CSVPublisher,
-    PublisherState,
-    WinAQMSPublisher,
-)
+from services.data_collector import DataCollector, SensorConfig, CollectorState, Sensor
+from services.csv_publisher import CSVPublisher, PublisherState
+from services.winaqms_publisher import WinAQMSPublisher, PublisherState as WPublisherState
 from drivers import DavisVantagePro2
 from gui import create_app, run_app
 from utils.control import update_control_file, initialize_control_file
@@ -38,12 +32,6 @@ class StationConfig(TypedDict):
     latitude: float
     longitude: float
     elevation: float
-
-
-class ControlState(TypedDict):
-    data_collector: str
-    publisher: str
-    winaqms_publisher: str
 
 
 async def main() -> None:
@@ -102,12 +90,12 @@ async def main() -> None:
             collector.set_columns(columns)
 
             # Inicializar publishers
-            publisher = CSVPublisher(logger=logger)
+            csv_publisher = CSVPublisher(logger=logger)
             winaqms_publisher = WinAQMSPublisher(logger=logger)
 
             # Escribir estado inicial en control.json
             await update_control_file("data_collector", "RUNNING")
-            await update_control_file("publisher", "RUNNING")
+            await update_control_file("csv_publisher", "RUNNING")
             await update_control_file("winaqms_publisher", "RUNNING")
 
             with open("control.json", "r") as f:
@@ -132,8 +120,8 @@ async def main() -> None:
             )
 
             # Agregar publishers si están activos
-            if control.get("publisher", "STOPPED").upper() == "RUNNING":
-                tasks.append(asyncio.create_task(publisher.run()))
+            if control.get("csv_publisher", "STOPPED").upper() == "RUNNING":
+                tasks.append(asyncio.create_task(csv_publisher.run()))
                 logger.info("Publisher started")
 
             if control.get("winaqms_publisher", "STOPPED").upper() == "RUNNING":
@@ -141,10 +129,10 @@ async def main() -> None:
                 logger.info("WinAQMS Publisher started")
 
             # Agregar UI task
-            window = create_app(collector, publisher, winaqms_publisher, shutdown_event)
+            window = create_app(collector, csv_publisher, winaqms_publisher, shutdown_event)
             tasks.append(
                 asyncio.create_task(
-                    run_app(window, collector, publisher, winaqms_publisher)
+                    run_app(window, collector, csv_publisher, winaqms_publisher)
                 )
             )
 
@@ -160,13 +148,13 @@ async def main() -> None:
                         tasks.append(asyncio.create_task(collector.collect_data_loop()))
 
                     # Reiniciar Publisher si está en RUNNING
-                    if control.get("publisher", "STOPPED").upper() == "RUNNING" and publisher.state != PublisherState.RUNNING:
-                        publisher.state = PublisherState.RUNNING
-                        tasks.append(asyncio.create_task(publisher.run()))
+                    if control.get("csv_publisher", "STOPPED").upper() == "RUNNING" and csv_publisher.state != PublisherState.RUNNING:
+                        csv_publisher.state = PublisherState.RUNNING
+                        tasks.append(asyncio.create_task(csv_publisher.run()))
 
                     # Reiniciar WinAQMS Publisher si está en RUNNING
-                    if control.get("winaqms_publisher", "STOPPED").upper() == "RUNNING" and winaqms_publisher.state != PublisherState.RUNNING:
-                        winaqms_publisher.state = PublisherState.RUNNING
+                    if control.get("winaqms_publisher", "STOPPED").upper() == "RUNNING" and winaqms_publisher.state != WPublisherState.RUNNING:
+                        winaqms_publisher.state = WPublisherState.RUNNING
                         tasks.append(asyncio.create_task(winaqms_publisher.run()))
 
                     await asyncio.sleep(2)  # Monitorear cada 2 segundos
@@ -187,7 +175,7 @@ async def main() -> None:
                 await asyncio.gather(*tasks, return_exceptions=True)
 
                 # Asegurarse de que los servicios se detengan
-                await shutdown(collector, publisher, winaqms_publisher)
+                await shutdown(collector, csv_publisher, winaqms_publisher)
 
             except asyncio.CancelledError:
                 logger.info("Main task canceled")
@@ -195,7 +183,7 @@ async def main() -> None:
                 logger.error(f"Error during shutdown: {e}", exc_info=True)
             finally:
                 # Último intento de detener servicios
-                await shutdown(collector, publisher, winaqms_publisher)
+                await shutdown(collector, csv_publisher, winaqms_publisher)
                 logger.info("Data collection system stopped")
 
     except Exception as e:
@@ -205,7 +193,7 @@ async def main() -> None:
 
 async def shutdown(
     collector: DataCollector,
-    publisher: CSVPublisher,
+    csv_publisher: CSVPublisher,
     winaqms_publisher: WinAQMSPublisher,
 ) -> None:
     """Perform a graceful shutdown for both data collector and publisher."""
@@ -216,17 +204,17 @@ async def shutdown(
         if collector:
             collector.state = CollectorState.STOPPED
 
-        if publisher:
-            if hasattr(publisher, "state"):
-                publisher.state = PublisherState.STOPPED
+        if csv_publisher:
+            if hasattr(csv_publisher, "state"):
+                csv_publisher.state = PublisherState.STOPPED
 
         if winaqms_publisher:
             if hasattr(winaqms_publisher, "state"):
-                winaqms_publisher.state = PublisherState.STOPPED
+                winaqms_publisher.state = WPublisherState.STOPPED
 
         # 2. Update control.json for persistence and external control
         await update_control_file("data_collector", "STOPPED")
-        await update_control_file("publisher", "STOPPED")
+        await update_control_file("csv_publisher", "STOPPED")
         await update_control_file("winaqms_publisher", "STOPPED")
 
         # 3. Give time for tasks to finish gracefully
