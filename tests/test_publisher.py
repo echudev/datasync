@@ -8,7 +8,8 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
-from services import CSVPublisher, PublisherState
+from services import CSVPublisher
+from models import ServiceState
 
 # Para evitar problemas en Windows, establecemos la política de event loop adecuada.
 if sys.platform.startswith("win"):
@@ -41,7 +42,7 @@ async def publisher_instance(env_setup):
     dentro de un event loop activo.
     """
     test_logger = logging.getLogger("test_logger")
-    return CSVPublisher(csv_dir=env_setup, logger=test_logger)
+    return CSVPublisher(csv_dir=env_setup)
 
 
 # -------------------------------
@@ -63,11 +64,11 @@ async def test_build_csv_path(publisher_instance):
 async def test_update_and_get_state(publisher_instance):
     await publisher_instance.update_state("STOPPED")
     state = await publisher_instance.get_state()
-    assert state == PublisherState.STOPPED, "El estado debería haber pasado a STOPPED."
+    assert state == ServiceState.STOPPED, "El estado debería haber pasado a STOPPED."
 
     await publisher_instance.update_state("RUNNING")
     state = await publisher_instance.get_state()
-    assert state == PublisherState.RUNNING, "El estado debería haber pasado a RUNNING."
+    assert state == ServiceState.RUNNING, "El estado debería haber pasado a RUNNING."
 
 
 # -------------------------------
@@ -261,8 +262,8 @@ async def test_run_stops_immediately(monkeypatch, publisher_instance):
         nonlocal call_count
         if call_count == 0:
             call_count += 1
-            return PublisherState.RUNNING
-        return PublisherState.STOPPED
+            return ServiceState.RUNNING
+        return ServiceState.STOPPED
 
     monkeypatch.setattr(publisher_instance, "get_state", fake_get_state)
 

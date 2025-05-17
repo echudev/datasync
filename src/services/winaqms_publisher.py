@@ -14,8 +14,7 @@ import logging
 import aiocsv
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
-from enum import Enum
-from typing import Optional, TypedDict
+from typing import Optional
 import pandas as pd
 import json
 import backoff
@@ -23,21 +22,9 @@ from aiohttp import ClientTimeout
 from aiohttp.client_exceptions import ClientError
 from utils.control import CONTROL_FILE, update_control_file
 from pathlib import Path
+from models import AirQualityDeviceDTO
+from utils.log_manager import LogManager
 
-
-class PublisherState(Enum):
-    RUNNING = 1
-    STOPPED = 3
-
-
-class SensorData(TypedDict):
-    timestamp: str
-    CO: Optional[float]
-    NO: Optional[float]
-    NO2: Optional[float]
-    NOx: Optional[float]
-    O3: Optional[float]
-    PM10: Optional[int]
 
 class WinAQMSPublisher:
     """Class to handle publishing hourly WinAQMS data to an external endpoint."""
@@ -49,7 +36,6 @@ class WinAQMSPublisher:
         origen: str = None,
         apiKey: str = None,
         check_interval: int = 5,
-        logger: Optional[logging.Logger] = None,
     ):
         """
         Initialize the WinAQMSPublisher.
@@ -75,10 +61,12 @@ class WinAQMSPublisher:
             raise ValueError("API Key must be provided or set in .env as API_KEY")
         self.check_interval = check_interval
         self.last_execution = None
-        self.logger = logger or logging.getLogger("winaqms_publisher")
-        self.state = PublisherState.RUNNING
-        self.state_lock = asyncio.Lock()
+        # Initialize logger
+        self.log_manager = LogManager(log_file="winaqms_publisher.log")
+        self.logger = self.log_manager.logger
+
         self.control_file = CONTROL_FILE  # Usar la constante del módulo control
+        self._task = None  # Almacenar la tarea principal
 
         # WinAQMS sensor configuration
         self.sensors = ["C1", "C2", "C3", "C4", "C5", "C6"]
@@ -92,20 +80,6 @@ class WinAQMSPublisher:
         }
         self.timeout = ClientTimeout(total=30)  # 30 seconds timeout
         self.max_retries = 3
-
-    async def update_state(self, new_state: str) -> None:
-        """Update state when changed by user."""
-        state_value = new_state.upper()
-        async with self.state_lock:
-            if state_value == "STOPPED":
-                self.state = PublisherState.STOPPED
-            elif state_value == "RUNNING":
-                self.state = PublisherState.RUNNING
-
-    async def get_state(self) -> PublisherState:
-        """Get current state in a thread-safe way."""
-        async with self.state_lock:
-            return self.state
 
     def _build_wad_path(self, year: str, month: str, day: str) -> Path:
         """Build path to WAD file for given date."""
@@ -172,7 +146,7 @@ class WinAQMSPublisher:
 
     def _calculate_hourly_averages(
         self, df: pd.DataFrame, target_hour: datetime
-    ) -> Optional[SensorData]:
+    ) -> Optional[AirQualityDeviceDTO]:
         """Calculate hourly averages for a specific hour."""
         try:
             if "Date_Time" not in df.columns:
@@ -198,7 +172,7 @@ class WinAQMSPublisher:
             if df.empty:
                 return None
 
-            result: SensorData = {
+            result: AirQualityDeviceDTO = {
                 "timestamp": hour_start.strftime("%Y-%m-%d %H:00"),
                 "CO": None,
                 "NO": None,
@@ -242,12 +216,12 @@ class WinAQMSPublisher:
     @backoff.on_exception(
         backoff.expo, (ClientError, asyncio.TimeoutError), max_tries=3, max_time=30
     )
-    async def _send_to_endpoint(self, sensor_data: SensorData) -> bool:
+    async def _send_to_endpoint(self, device_data: AirQualityDeviceDTO) -> bool:
         """
         Send data to the external endpoint asynchronously.
 
         Args:
-            sensor_data (SensorData): Single sensor data reading to send.
+            device_data (AirQualitySensorData): Single sensor data reading to send.
 
         Returns:
             bool: True if successful, False otherwise.
@@ -256,7 +230,7 @@ class WinAQMSPublisher:
             api_payload = {
                 "apiKey": self.apiKey,
                 "origen": self.origen,
-                "data": [sensor_data],
+                "data": [device_data],
             }
 
             async with aiohttp.ClientSession(timeout=self.timeout) as session:
@@ -268,7 +242,7 @@ class WinAQMSPublisher:
                 ) as response:
                     response_text = await response.text()
                     self.logger.info(
-                        f"WinAqms data: {sensor_data['timestamp']}, sent successfully to: {response_text[:100]}"
+                        f"WinAqms data: {device_data['timestamp']}, sent successfully to: {response_text[:100]}"
                     )
                     return True
         except Exception as e:
@@ -335,8 +309,7 @@ class WinAQMSPublisher:
         self.logger.info("Starting WinAQMS publisher...")
         first_run = True
 
-        while await self.get_state() == PublisherState.RUNNING:
-            self.logger.debug(f"winaqms_publisher while is running, current state: {self.state}")	
+        while True:
             try:
                 now = datetime.now()
                 self.logger.debug(f"Current time: {now}, Last execution: {self.last_execution}")

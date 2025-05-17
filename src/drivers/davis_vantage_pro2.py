@@ -5,12 +5,12 @@ import time
 from typing import Dict
 from array import array
 
-from services import Sensor
+from models import Device
 
 logger = logging.getLogger("davis_vantage_pro2")
 
 
-class DavisVantagePro2(Sensor):
+class DavisVantagePro2(Device):
     CRC_TABLE = (
         0x0,
         0x1021,

@@ -5,11 +5,12 @@ import pytest
 from datetime import datetime
 from pathlib import Path
 from unittest.mock import MagicMock, patch, AsyncMock
-from services.data_collector import DataCollector, Sensor, CollectorState
+from services import DataCollector
+from models import Device, ServiceState
 from typing import Dict
 
 
-class MockSensor(Sensor):
+class MockSensor(Device):
     """Mock implementation of the Sensor abstract class for testing."""
 
     def __init__(self, mock_data=None):
@@ -28,8 +29,7 @@ class TestDataCollector(unittest.TestCase):
         self.logger = logging.getLogger("test_data_collector")
         self.logger.setLevel(logging.DEBUG)
         self.output_path = Path("/tmp/test_data")
-        self.collector = DataCollector(self.output_path, self.logger)
-
+        self.collector = DataCollector(self.output_path)
         # Add timestamp to all columns
         self.collector.set_columns(["timestamp", "Temperature", "Humidity", "RainRate"])
 
@@ -53,7 +53,7 @@ class TestDataCollector(unittest.TestCase):
     def test_initialization(self):
         """Test that DataCollector initializes with correct values."""
         self.assertEqual(self.collector.output_path, self.output_path)
-        self.assertEqual(self.collector.state, CollectorState.RUNNING)
+        self.assertEqual(self.collector.state, ServiceState.RUNNING)
         self.assertEqual(
             self.collector.csv_columns,
             ["timestamp", "Temperature", "Humidity", "RainRate"],
@@ -72,18 +72,18 @@ class TestDataCollector(unittest.TestCase):
         mock_datetime.strptime = datetime.strptime
 
         # Configure the test to run collector for a bit then stop
-        self.collector.state = CollectorState.RUNNING
+        self.collector.state = ServiceState.RUNNING
 
-        # Create a custom task for collection that we'll stop after a short time
-        collector_task = asyncio.create_task(
-            self.collector.collect_data(self.sensor, self.sensor_config)
-        )
+        # Create a custom task for collection using the manager
+        self.task_manager.add_task("test_collect", self.collector.collect_data, self.sensor, self.sensor_config)
+        collector_task = self.task_manager.get_task("test_collect")
+        self.assertIsNotNone(collector_task, "Task should have been added by the manager")
 
         # Let it run briefly
         await asyncio.sleep(0.3)
 
         # Change state to stop collection
-        self.collector.state = CollectorState.STOPPING
+        self.collector.state = ServiceState.STOPPING
 
         # Wait for the task to complete
         try:
@@ -125,16 +125,16 @@ class TestDataCollector(unittest.TestCase):
         # Mock _save_batch_data to track calls
         self.collector._save_batch_data = AsyncMock()
 
-        # Run process_and_save_data in a task
-        process_task = asyncio.create_task(
-            self.collector.process_and_save_data(output_interval=0.1, batch_size=1)
-        )
+        # Run process_and_save_data in a task using the manager
+        self.task_manager.add_task("test_process", self.collector.process_and_save_data, output_interval=0.1, batch_size=1)
+        process_task = self.task_manager.get_task("test_process")
+        self.assertIsNotNone(process_task, "Task should have been added by the manager")
 
         # Let it run briefly
         await asyncio.sleep(0.3)
 
         # Stop the task
-        self.collector.state = CollectorState.STOPPING
+        self.collector.state = ServiceState.STOPPING
 
         # Wait for the task to complete
         try:
@@ -235,10 +235,10 @@ class TestDataCollector(unittest.TestCase):
     async def test_context_manager(self):
         """Test that the async context manager protocol works correctly."""
         async with self.collector as collector:
-            self.assertEqual(collector.state, CollectorState.RUNNING)
+            self.assertEqual(collector.state, ServiceState.RUNNING)
 
         # After context exit
-        self.assertEqual(self.collector.state, CollectorState.STOPPED)
+        self.assertEqual(self.collector.state, ServiceState.STOPPED)
 
 
 if __name__ == "__main__":

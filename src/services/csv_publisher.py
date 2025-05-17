@@ -6,39 +6,24 @@ calculates hourly averages, and sends them to a specified API endpoint, controll
 """
 
 import os
+from pathlib import Path
 import asyncio
 import aiohttp
 import aiofiles
 import logging
 import traceback
 from datetime import datetime, timedelta
-from enum import Enum
 from dotenv import load_dotenv
-from typing import Dict, Any, Optional, TypedDict
+from typing import Dict, Any, Optional
 import pandas as pd
 import json
 import aiocsv
 import backoff
-from aiohttp import ClientTimeout, TCPConnector
+from aiohttp import ClientTimeout
 from aiohttp.client_exceptions import ClientError
 from utils.control import CONTROL_FILE, update_control_file
-
-
-class PublisherState(Enum):
-    RUNNING = 1
-    STOPPED = 3
-
-
-class SensorData(TypedDict):
-    timestamp: str
-    TEMP: Optional[float]
-    HR: Optional[float]
-    PA: Optional[float]
-    VV: Optional[float]
-    DV: Optional[float]
-    LLUVIA: Optional[float]
-    UV: Optional[float]
-    RS: Optional[float]
+from models import WeatherDeviceDTO
+from utils.log_manager import LogManager
 
 
 class CSVPublisher:
@@ -46,12 +31,11 @@ class CSVPublisher:
 
     def __init__(
         self,
-        csv_dir: str = "data",
+        csv_dir: str = None,
         endpoint_url: str = None,
         origen: str = None,
         apiKey: str = None,
         check_interval: int = 5,
-        logger: Optional[logging.Logger] = None,
     ):
         """
         Initialize the CSVPublisher.
@@ -60,10 +44,9 @@ class CSVPublisher:
         - csv_dir (str): Directory containing the CSV files (default: "data").
         - endpoint_url (str): URL of the API endpoint (loaded from env if None).
         - check_interval (int): Interval in seconds to check the control file (default: 5).
-        - logger: Logger instance (optional).
         """
         load_dotenv()
-        self.csv_dir = csv_dir
+        self.csv_dir = Path(csv_dir) if csv_dir else Path(__file__).parent.parent.parent / "data"
         self.endpoint_url = endpoint_url or os.getenv("GOOGLE_POST_URL")
         if not self.endpoint_url:
             raise ValueError(
@@ -77,11 +60,14 @@ class CSVPublisher:
             raise ValueError("API Key must be provided or set in .env as API_KEY")
         self.check_interval = check_interval
         self.last_execution = None
-        self.logger = logger or logging.getLogger("publisher")
-        self.state = PublisherState.RUNNING
-        self.state_lock = asyncio.Lock()
+        
+        # Initialize logger
+        self.log_manager = LogManager(log_file="csv_publisher.log")
+        self.logger = self.log_manager.logger
+
         self.control_file = CONTROL_FILE
-        self.sensors = [
+        
+        self.parameters = [
             "Temperature",
             "Humidity",
             "Pressure",
@@ -102,22 +88,8 @@ class CSVPublisher:
             "SolarRadiation": "RS",
         }
         self.timeout = ClientTimeout(total=30)
-        self.connector = TCPConnector(limit=10)
         self.max_retries = 3
 
-    async def update_state(self, new_state: str) -> None:
-        """Update state when changed by user."""
-        state_value = new_state.upper()
-        async with self.state_lock:
-            if state_value == "STOPPED":
-                self.state = PublisherState.STOPPED
-            elif state_value == "RUNNING":
-                self.state = PublisherState.RUNNING
-
-    async def get_state(self) -> PublisherState:
-        """Get current state in a thread-safe way."""
-        async with self.state_lock:
-            return self.state
 
     def _build_csv_path(self, year: str, month: str, day: str) -> str:
         """
@@ -181,7 +153,7 @@ class CSVPublisher:
 
     def _calculate_hourly_averages(
         self, df: pd.DataFrame, target_hour: datetime
-    ) -> Optional[SensorData]:
+    ) -> Optional[WeatherDeviceDTO]:
         """Calculate hourly averages for a specific hour."""
         try:
             if "timestamp" not in df.columns:
@@ -197,7 +169,7 @@ class CSVPublisher:
             if df.empty:
                 return None
 
-            result: SensorData = {
+            result: WeatherDeviceDTO = {
                 "timestamp": hour_start.strftime("%Y-%m-%d %H:00"),
                 "TEMP": None,
                 "HR": None,
@@ -210,12 +182,12 @@ class CSVPublisher:
             }
 
             # Calculate averages using the sensor names and mapping them to API names
-            for sensor_name in self.sensors:
-                if sensor_name in df.columns:
+            for parameter in self.parameters:
+                if parameter in df.columns:
                     api_name = self.header_mapping[
-                        sensor_name
+                        parameter
                     ]  # Get the API field name
-                    values = pd.to_numeric(df[sensor_name], errors="coerce")
+                    values = pd.to_numeric(df[parameter], errors="coerce")
                     if not values.empty and not values.isna().all():
                         result[api_name] = round(float(values.mean()), 2)
 
@@ -307,7 +279,7 @@ class CSVPublisher:
         self.logger.info("Starting Publisher...")
         first_run = True
 
-        while await self.get_state() == PublisherState.RUNNING:
+        while True:
             try:
                 now = datetime.now()
                 if first_run:

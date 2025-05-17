@@ -6,97 +6,59 @@ using asyncio for concurrency and pandas for data handling.
 """
 
 import asyncio
-import logging
-from abc import ABC, abstractmethod
 from collections import defaultdict
 from datetime import datetime, timedelta
-from enum import Enum
 from pathlib import Path
-from typing import Dict, List, Any, TypedDict, Optional
-
+from typing import Dict, List, Any
 import pandas as pd
 from tenacity import retry, stop_after_attempt, wait_fixed
-
-
-# Estado del recolector
-class CollectorState(Enum):
-    RUNNING = 1
-    STOPPING = 2
-    STOPPED = 3
-
-class SensorConfig(TypedDict):
-    """Type definition for sensor configuration."""
-
-    name: str
-    keys: List[str]
-    scan_interval: float
-
-
-class Sensor(ABC):
-    """Abstract base class for sensor implementations."""
-
-    @abstractmethod
-    async def read(self) -> Dict[str, float]:
-        pass
-
+from models import Device, DeviceConfig
+from utils.log_manager import LogManager
+from utils.path_dir import DATA_DIR  
 
 class DataCollector:
-    """Handles collection and processing of sensor data."""
+    """Handles collection and processing of device data."""
 
-    def __init__(self, output_path: Path, logger: Optional[logging.Logger] = None):
-        self.output_path = output_path
-        self.logger = logger or logging.getLogger("data_collector")
-        self.state = CollectorState.RUNNING
+    def __init__(self, columns: List[str]):
+        self.output_path = DATA_DIR
         self.data_buffer = defaultdict(lambda: {"data": defaultdict(float), "count": 0})
         self.data_to_save = []
-        self.csv_columns = []
+        self.csv_columns = columns
         self.data_lock = asyncio.Lock()
-        self.state_lock = asyncio.Lock()
+        # Initialize logger
+        self.log_manager = LogManager(log_file="collector.log")
+        self.logger = self.log_manager.logger
 
     async def __aenter__(self):
         """Async context manager entry."""
-        self.logger.info("Initializing DataCollector")
         return self
 
-    async def __aexit__(self, exc_type, exc, tb):
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
         """Async context manager exit."""
-        self.state = CollectorState.STOPPING
-        await asyncio.sleep(1)  # Dar tiempo a las tareas para terminar
-        self.state = CollectorState.STOPPED
-        if self.data_to_save:  # Guardar datos pendientes
-            await self._save_batch_data(self.data_to_save)
-        self.logger.info("DataCollector shut down")
+        # Give time for tasks to finish gracefully
+        await asyncio.sleep(1)
+        return None
 
-    async def set_state(self, new_state: CollectorState) -> None:
-        """Thread-safe state update."""
-        async with self.state_lock:
-            self.state = new_state
-
-    async def get_state(self) -> CollectorState:
-        """Thread-safe state retrieval."""
-        async with self.state_lock:
-            return self.state
-
-    async def collect_data(self, sensor: Sensor, sensor_config: SensorConfig) -> None:
+    async def collect_data(self, device: Device, device_config: DeviceConfig) -> None:
         """Collect data from a sensor at regular intervals."""
         required = {"name", "keys", "scan_interval"}
-        if not all(k in sensor_config for k in required):
+        if not all(k in device_config for k in required):
             raise ValueError(f"Sensor config missing required fields: {required}")
 
-        name = sensor_config["name"]
-        scan_interval = sensor_config["scan_interval"]
+        name = device_config["name"]
+        scan_interval = device_config["scan_interval"]
 
         self.logger.info(f"Starting data collection for sensor {name}")
         try:
-            while await self.get_state() == CollectorState.RUNNING:
+            while True:
                 start_time = datetime.now()
                 timestamp_key = start_time.strftime("%Y-%m-%d %H:%M")
 
-                sensor_data = await sensor.read()
+                device_data = await device.read()
 
                 async with self.data_lock:
                     buffer_entry = self.data_buffer[timestamp_key]
-                    for key, value in sensor_data.items():
+                    for key, value in device_data.items():
                         buffer_entry["data"][key] = (
                             buffer_entry["data"].get(key, 0.0) + value
                         )
@@ -117,7 +79,7 @@ class DataCollector:
         """Process collected data and save each minute."""
         self.logger.info("Starting data processing task")
         try:
-            while await self.get_state() == CollectorState.RUNNING:
+            while True:
                 await asyncio.sleep(output_interval)
 
                 now = datetime.now()
@@ -177,11 +139,3 @@ class DataCollector:
         except Exception as e:
             self.logger.error(f"Error saving batch data to {output_file}: {e}")
             raise
-
-    def set_columns(self, columns: List[str]) -> None:
-        """Set the CSV column names."""
-        self.csv_columns = columns
-
-    def set_output_path(self, path: Path) -> None:
-        """Set the output directory path."""
-        self.output_path = path

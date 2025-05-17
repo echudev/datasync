@@ -7,7 +7,8 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
-from services import WinAQMSPublisher, PublisherState
+from services import WinAQMSPublisher
+from models import ServiceState
 
 # Para evitar problemas en Windows, se establece la política adecuada para el event loop.
 if sys.platform.startswith("win"):
@@ -40,7 +41,7 @@ async def publisher_instance(env_setup):
     y un logger de prueba.
     """
     test_logger = logging.getLogger("test_logger")
-    return WinAQMSPublisher(wad_dir=env_setup, logger=test_logger)
+    return WinAQMSPublisher(wad_dir=env_setup)
 
 
 # -------------------------------
@@ -61,11 +62,11 @@ async def test_update_and_get_state(publisher_instance):
     await publisher_instance.update_state("STOPPED")
     state = await publisher_instance.get_state()
     # Comparamos el valor para evitar problemas de identidad
-    assert state.value == PublisherState.STOPPED.value, "El estado debería ser STOPPED."
+    assert state.value == ServiceState.STOPPED.value, "El estado debería ser STOPPED."
 
     await publisher_instance.update_state("RUNNING")
     state = await publisher_instance.get_state()
-    assert state.value == PublisherState.RUNNING.value, "El estado debería ser RUNNING."
+    assert state.value == ServiceState.RUNNING.value, "El estado debería ser RUNNING."
 
 
 # -------------------------------

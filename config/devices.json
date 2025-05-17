@@ -1,0 +1,16 @@
+[
+  {
+    "name": "davisvp2",
+    "keys": [
+      "Temperature",
+      "Humidity",
+      "Pressure",
+      "WindSpeed",
+      "WindDirection",
+      "RainRate",
+      "UV",
+      "SolarRadiation"
+    ],
+    "scan_interval": 10.0
+  }
+]
