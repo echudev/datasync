@@ -17,7 +17,7 @@ from typing import List
 
 from core.services import DataCollector, WinAQMSPublisher, CSVPublisher
 from core.models import  StationConfig, DeviceConfig
-from core.devices import DavisVantagePro2
+from core.device_adapters import DavisVantagePro2
 from core.utils.control import update_control_file, initialize_control_file
 from core.utils.log_manager import LogManager
 from core.utils.path_dir import CONFIG_DIR
@@ -172,8 +172,12 @@ if __name__ == "__main__":
             df_json = json.load(df)
         devices_config: List[DeviceConfig] = df_json
 
+
+        # Initialize devices logger
+        device_logger = LogManager(log_file="device.log", level="INFO")
+
         devices_classes = {
-            "davisvp2": lambda: DavisVantagePro2(port="COM4"),
+            "davisvp2": lambda: DavisVantagePro2(port="COM4", logger=device_logger.logger),
         }
         devices = [
             devices_classes[cfg["name"]]() for cfg in devices_config

@@ -6,10 +6,14 @@ from typing import Dict
 from array import array
 from core.models import Device
 
-logger = logging.getLogger("collector")
-
-
 class DavisVantagePro2(Device):
+    def __init__(self, port: str = "COM4", baudrate: int = 19200, timeout: float = 5, logger=None):
+        self.port = port
+        self.baudrate = baudrate
+        self.timeout = timeout
+        self.serial_conn = None
+        self.logger = logger if logger else logging.getLogger("collector")
+
     CRC_TABLE = (
         0x0,
         0x1021,
@@ -269,11 +273,6 @@ class DavisVantagePro2(Device):
         0x1EF0,
     )
 
-    def __init__(self, port: str = "COM4", baudrate: int = 19200, timeout: float = 5):
-        self.port = port
-        self.baudrate = baudrate
-        self.timeout = timeout
-        self.serial_conn = None
 
     def connect(self) -> None:
         try:
@@ -285,10 +284,10 @@ class DavisVantagePro2(Device):
                 stopbits=serial.STOPBITS_ONE,
                 timeout=self.timeout,
             )
-            logger.info(f"Connected to {self.port}")
+            self.logger.info(f"Connected to {self.port}")
             self.wake_up()
         except serial.SerialException as e:
-            logger.error(f"Error connecting to Davis Vantage Pro 2: {e}")
+            self.logger.error(f"Error connecting to Davis Vantage Pro 2: {e}")
             raise
 
     def wake_up(self) -> None:
@@ -297,14 +296,14 @@ class DavisVantagePro2(Device):
             time.sleep(2)
             response = self.serial_conn.read(2)
             if response != b"\n\r":
-                logger.error(f"Failed to wake up station, response: {response!r}")
+                self.logger.error(f"Failed to wake up station, response: {response!r}")
                 raise Exception(f"Failed to wake up station, response: {response!r}")
-            logger.info("Station is awake")
+            self.logger.info("Station is awake")
         except serial.SerialException as e:
-            logger.error(f"Serial error during wake_up: {e}")
+            self.logger.error(f"Serial error during wake_up: {e}")
             raise   
         except Exception as e:
-            logger.error(f"Unexpected error during wake_up: {e}")
+            self.logger.error(f"Unexpected error durante wake_up: {e}")
             raise
 
     async def read(self) -> Dict[str, float]:
@@ -315,7 +314,7 @@ class DavisVantagePro2(Device):
             data = await loop.run_in_executor(None, self._read_sync)
             return data
         except Exception as e:
-            logger.error(f"Error reading data: {e}")
+            self.logger.error(f"Error reading data: {e}")
             return {}
 
     def _read_sync(self) -> Dict[str, float]:
@@ -337,7 +336,7 @@ class DavisVantagePro2(Device):
             data = self._parse_loop_packet(packet)
             return data
         except Exception as e:
-            logger.error(f"Error in synchronous read: {e}")
+            self.logger.error(f"Error in synchronous read: {e}")
             return {}
 
     def calculate_crc(self, data: bytes) -> int:
@@ -400,7 +399,7 @@ class DavisVantagePro2(Device):
                 ),  # W/m², redondeado a 2 decimales
             }
         except Exception as e:
-            logger.error(f"Error parsing packet: {e}")
+            self.logger.error(f"Error parsing packet: {e}")
             return {
                 "Temperature": 0.0,
                 "Humidity": 0.0,
@@ -415,7 +414,7 @@ class DavisVantagePro2(Device):
     def close(self) -> None:
         if self.serial_conn and self.serial_conn.is_open:
             self.serial_conn.close()
-            logger.info("Connection closed")
+            self.logger.info("Connection closed")
 
     async def __aenter__(self):
         await asyncio.get_event_loop().run_in_executor(None, self.connect)

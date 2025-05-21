@@ -11,6 +11,6 @@
       "UV",
       "SolarRadiation"
     ],
-    "scan_interval": 10.0
+    "scan_interval": 5.0
   }
 ]
