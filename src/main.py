@@ -17,7 +17,7 @@ from typing import List
 
 from core.services import DataCollector, WinAQMSPublisher, CSVPublisher
 from core.models import  StationConfig, DeviceConfig
-from core.device_adapters import DavisVantagePro2
+from core.drivers import DavisVantagePro2
 from core.utils.control import update_control_file, initialize_control_file
 from core.utils.log_manager import LogManager
 from core.utils.path_dir import CONFIG_DIR
