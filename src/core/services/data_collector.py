@@ -11,12 +11,12 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Any
 import pandas as pd
 from tenacity import retry, stop_after_attempt, wait_fixed
-from models import Device, DeviceConfig
-from utils.log_manager import LogManager
-from utils.path_dir import DATA_DIR  
+from core.models import Device, DeviceConfig
+from core.utils.log_manager import LogManager
+from core.utils.path_dir import DATA_DIR  
 
 class DataCollector:
-    """Handles collection and processing of device data."""
+    """Handles collection of simultaneous data from multiple sensors."""
 
     def __init__(self, columns: List[str]):
         self.output_path = DATA_DIR

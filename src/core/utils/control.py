@@ -2,7 +2,7 @@ import json
 import logging
 import aiofiles
 from typing import Union
-from utils.path_dir import CONFIG_DIR  
+from core.utils.path_dir import CONFIG_DIR
 
 logger = logging.getLogger(__name__)
 

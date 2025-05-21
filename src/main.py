@@ -15,12 +15,12 @@ import asyncio
 import json
 from typing import List
 
-from services import DataCollector, WinAQMSPublisher, CSVPublisher
-from models import  StationConfig, DeviceConfig
-from devices import DavisVantagePro2
-from utils.control import update_control_file, initialize_control_file
-from utils.log_manager import LogManager
-from utils.path_dir import CONFIG_DIR
+from core.services import DataCollector, WinAQMSPublisher, CSVPublisher
+from core.models import  StationConfig, DeviceConfig
+from core.devices import DavisVantagePro2
+from core.utils.control import update_control_file, initialize_control_file
+from core.utils.log_manager import LogManager
+from core.utils.path_dir import CONFIG_DIR
 
 
 class App(QObject):
@@ -141,17 +141,16 @@ class App(QObject):
 
 
 if __name__ == "__main__":
-    try:
-        # Configurar argumentos para debugging QML
-        sys.argv += ["--qmljsdebugger=port:3768,block"]
-        
+    try:   
         app = QApplication(sys.argv)
         loop = QEventLoop(app)       
         asyncio.set_event_loop(loop)
         
         # Crear el engine de QML
         engine = QQmlApplicationEngine()
-        engine.addImportPath(os.path.dirname(__file__)) 
+        # Agregar la carpeta 'ui' como ruta de importación QML
+        ui_dir = os.path.join(os.path.dirname(__file__), "ui")
+        engine.addImportPath(ui_dir)
 
         # Initialize logging using LogManager
         log_manager = LogManager(log_file="main.log")
@@ -198,8 +197,8 @@ if __name__ == "__main__":
         # Exponer la aplicación al QML
         engine.rootContext().setContextProperty("python", app_logic)
 
-        # Cargo el QML principal
-        qmlMainFile = os.path.join(os.path.dirname(__file__), "main.qml")
+        # Cargo el QML principal desde la carpeta 'ui'
+        qmlMainFile = os.path.join(ui_dir, "main.qml")
         engine.load(QUrl.fromLocalFile(qmlMainFile))
 
         if not engine.rootObjects():

@@ -4,10 +4,9 @@ import serial
 import time
 from typing import Dict
 from array import array
+from core.models import Device
 
-from models import Device
-
-logger = logging.getLogger("davis_vantage_pro2")
+logger = logging.getLogger("collector")
 
 
 class DavisVantagePro2(Device):
@@ -293,12 +292,20 @@ class DavisVantagePro2(Device):
             raise
 
     def wake_up(self) -> None:
-        self.serial_conn.write(b"\n")
-        time.sleep(2)
-        response = self.serial_conn.read(2)
-        if response != b"\n\r":
-            raise Exception(f"Failed to wake up station, response: {response!r}")
-        logger.info("Station is awake")
+        try:
+            self.serial_conn.write(b"\n")
+            time.sleep(2)
+            response = self.serial_conn.read(2)
+            if response != b"\n\r":
+                logger.error(f"Failed to wake up station, response: {response!r}")
+                raise Exception(f"Failed to wake up station, response: {response!r}")
+            logger.info("Station is awake")
+        except serial.SerialException as e:
+            logger.error(f"Serial error during wake_up: {e}")
+            raise   
+        except Exception as e:
+            logger.error(f"Unexpected error during wake_up: {e}")
+            raise
 
     async def read(self) -> Dict[str, float]:
         try:

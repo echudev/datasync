@@ -16,8 +16,8 @@ The logger will only display logs from the selected level and above.
 
 import logging
 from pathlib import Path
-from typing import Tuple
 from enum import Enum
+from core.utils.path_dir import LOG_DIR
 
 
 class LoggerLevel(Enum):
@@ -31,7 +31,7 @@ class LogManager:
     """Manages application logs operations."""
 
     def __init__(self, log_dir: str = None, log_file: str = "datasync.log", level: LoggerLevel = LoggerLevel.INFO):
-        self.log_dir = Path(log_dir or Path(__file__).parent.parent.parent / "logs")
+        self.log_dir = Path(log_dir) if log_dir else LOG_DIR
         self.log_file = self.log_dir / log_file
         self.level = level
         self._ensure_log_directory()
