@@ -1,6 +1,10 @@
 [
   {
     "name": "davisvp2",
+    "connection_type": "serial",
+    "port": "COM4",
+    "baudrate": 19200,
+    "timeout": 5,
     "keys": [
       "Temperature",
       "Humidity",
@@ -11,6 +15,6 @@
       "UV",
       "SolarRadiation"
     ],
-    "scan_interval": 5.0
+    "scan_interval": 10.0
   }
 ]

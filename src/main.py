@@ -13,11 +13,11 @@ import sys
 import os
 import asyncio
 import json
-from typing import List
+from typing import List, Dict
 
 from core.services import DataCollector, WinAQMSPublisher, CSVPublisher
-from core.models import  StationConfig, DeviceConfig
-from core.drivers import DavisVantagePro2
+from core.models import StationConfig, DeviceConfig
+from core.factories.device_factory import DeviceFactory
 from core.utils.control import update_control_file, initialize_control_file
 from core.utils.log_manager import LogManager
 from core.utils.path_dir import CONFIG_DIR
@@ -26,6 +26,7 @@ from core.utils.path_dir import CONFIG_DIR
 class App(QObject):
     # Señales para QML
     serviceStateChanged = Signal(str, str)  # service_id, state
+    deviceStateChanged = Signal(str, str)  # device_name, state
     minimizeToTrayRequested = Signal()
     logTextChanged = Signal()  # Señal para notificar cambios en el texto del log
 
@@ -71,21 +72,37 @@ class App(QObject):
             task_info = self._tasks.get(service_id)
             return "RUNNING" if task_info and task_info["running"] else "STOPPED"
 
+    @Slot(str, result=str)
+    def get_device_state(self, device_name: str) -> str:
+        """Obtiene el estado actual de un dispositivo"""
+        if self._collector:
+            return "RUNNING" if self._collector.get_device_state(device_name) else "STOPPED"
+        return "STOPPED"
+
+    @Slot(str)
+    def start_device(self, device_name: str):
+        """Inicia la recolección de datos para un dispositivo específico"""
+        if self._collector:
+            self._loop.create_task(self._collector.start_device(device_name))
+            self.deviceStateChanged.emit(device_name, "RUNNING")
+            self.logger.info(f"Iniciando recolección para dispositivo {device_name}")
+
+    @Slot(str)
+    def stop_device(self, device_name: str):
+        """Detiene la recolección de datos para un dispositivo específico"""
+        if self._collector:
+            self._loop.create_task(self._collector.stop_device(device_name))
+            self.deviceStateChanged.emit(device_name, "STOPPED")
+            self.logger.info(f"Deteniendo recolección para dispositivo {device_name}")
+
     @Slot(str)
     def start_task(self, task_id: str):
         """Inicia una tarea específica"""
         current_state = self.get_service_state(task_id)
         if current_state == "STOPPED":
             if task_id == "data_collector":
-                # Iniciar tareas para cada dispositivo
-                for device, config in zip(self._devices, self._devices_config):
-                    task = self._loop.create_task(self._collector.collect_data(device, config))
-                    self._tasks[f"{task_id}_{config['name']}"] = {
-                        "task": task,
-                        "running": True
-                    }
                 # Iniciar el procesamiento de datos
-                task = self._loop.create_task(self._collector.process_and_save_data(output_interval=60.0))
+                task = self._loop.create_task(self._collector.start_collection())
                 self._tasks[f"{task_id}_processor"] = {
                     "task": task,
                     "running": True
@@ -137,7 +154,6 @@ class App(QObject):
     def restoreFromTray(self):
         if self.window and self.tray_icon:
             self.window.setProperty('visible', True)
-            # No ocultar el tray icon para que el menú contextual siempre esté disponible    
 
 
 if __name__ == "__main__":
@@ -170,17 +186,20 @@ if __name__ == "__main__":
         # Cargar configuración de los analizadores / meteo
         with open(CONFIG_DIR / "devices.json") as df:
             df_json = json.load(df)
+
+        # Cargo los dispositivos configurados por el usuario
         devices_config: List[DeviceConfig] = df_json
 
-
-        # Initialize devices logger
-        device_logger = LogManager(log_file="device.log", level="INFO")
-
-        devices_classes = {
-            "davisvp2": lambda: DavisVantagePro2(port="COM4", logger=device_logger.logger),
-        }
+        # Creo una instancia del factory de dispositivos
+        device_factory = DeviceFactory.get_instance()
+        
+        # Instancio los dispositivos configurados por el usuario
         devices = [
-            devices_classes[cfg["name"]]() for cfg in devices_config
+            device_factory.create_device(
+                cfg["name"],
+                port=cfg["port"],
+                logger=logger
+            ) for cfg in devices_config
         ]
 
         # Configurar columnas
@@ -189,7 +208,12 @@ if __name__ == "__main__":
             columns.extend(device_config["keys"])
     
         # Creo instancia del recolector de datos
-        collector = DataCollector(columns=columns)
+        collector = DataCollector(columns=columns, logger=logger)
+        
+        # Agregar dispositivos al collector
+        for device, config in zip(devices, devices_config):
+            loop.create_task(collector.add_device(device, config))
+        
         # Inicializar publishers
         csv_publisher = CSVPublisher()
         winaqms_publisher = WinAQMSPublisher()
@@ -201,7 +225,7 @@ if __name__ == "__main__":
         # Exponer la aplicación al QML
         engine.rootContext().setContextProperty("python", app_logic)
 
-        # Cargo el QML principal desde la carpeta 'ui'
+        # Cargar el QML principal desde la carpeta 'ui'
         qmlMainFile = os.path.join(ui_dir, "main.qml")
         engine.load(QUrl.fromLocalFile(qmlMainFile))
 

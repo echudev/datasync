@@ -6,110 +6,187 @@ using asyncio for concurrency and pandas for data handling.
 """
 
 import asyncio
+import logging
 from collections import defaultdict
 from datetime import datetime, timedelta
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional
 import pandas as pd
 from tenacity import retry, stop_after_attempt, wait_fixed
 from core.models import Device, DeviceConfig
-from core.utils.log_manager import LogManager
-from core.utils.path_dir import DATA_DIR  
+from core.utils.path_dir import DATA_DIR
 
 class DataCollector:
-    """Handles collection of simultaneous data from multiple sensors."""
-
-    def __init__(self, columns: List[str]):
+    """Manages data collection from multiple devices with a unified buffer."""
+    
+    def __init__(self, columns: List[str], logger: logging.Logger):
         self.output_path = DATA_DIR
-        self.data_buffer = defaultdict(lambda: {"data": defaultdict(float), "count": 0})
-        self.data_to_save = []
         self.csv_columns = columns
-        self.data_lock = asyncio.Lock()
-        # Initialize logger
-        self.log_manager = LogManager(log_file="collector.log")
-        self.logger = self.log_manager.logger
-
-    async def __aenter__(self):
-        """Async context manager entry."""
-        return self
-
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        """Async context manager exit."""
-        # Give time for tasks to finish gracefully
-        await asyncio.sleep(1)
-        return None
-
-    async def collect_data(self, device: Device, device_config: DeviceConfig) -> None:
-        """Collect data from a sensor at regular intervals."""
-        required = {"name", "keys", "scan_interval"}
-        if not all(k in device_config for k in required):
-            raise ValueError(f"Sensor config missing required fields: {required}")
-
-        name = device_config["name"]
-        scan_interval = device_config["scan_interval"]
-
-        self.logger.info(f"Starting data collection for sensor {name}")
+        self.logger = logger
+        self._devices: Dict[str, Device] = {}
+        self._configs: Dict[str, DeviceConfig] = {}
+        self._tasks: Dict[str, asyncio.Task] = {}
+        self._running = False
+        self._device_states: Dict[str, bool] = {}  # Estado individual de cada dispositivo
+        self._data_buffer = defaultdict(lambda: {"data": defaultdict(float), "count": 0})
+        self._data_lock = asyncio.Lock()
+        self._processor_task: Optional[asyncio.Task] = None
+    
+    async def add_device(self, device: Device, device_config: DeviceConfig) -> None:
+        """Add a new device to the collector."""
+        device_name = device_config["name"]
+        self._devices[device_name] = device
+        self._configs[device_name] = device_config
+        self._device_states[device_name] = False  # Inicialmente detenido
+        self.logger.info(f"Added device {device_name}")
+    
+    async def remove_device(self, device_name: str) -> None:
+        """Remove a device from the collector."""
+        if device_name in self._tasks:
+            await self.stop_device(device_name)
+            del self._tasks[device_name]
+        
+        if device_name in self._devices:
+            del self._devices[device_name]
+            del self._configs[device_name]
+            del self._device_states[device_name]
+            self.logger.info(f"Removed device {device_name}")
+    
+    async def start_device(self, device_name: str) -> None:
+        """Start data collection for a specific device."""
+        if device_name not in self._devices:
+            self.logger.error(f"Device {device_name} not found")
+            return
+            
+        if self._device_states[device_name]:
+            self.logger.warning(f"Device {device_name} is already running")
+            return
+            
+        self._device_states[device_name] = True
+        self._tasks[device_name] = asyncio.create_task(
+            self._collect_device_data(device_name, self._devices[device_name], self._configs[device_name])
+        )
+        self.logger.info(f"Started data collection for device {device_name}")
+    
+    async def stop_device(self, device_name: str) -> None:
+        """Stop data collection for a specific device."""
+        if device_name not in self._devices:
+            return
+            
+        if not self._device_states[device_name]:
+            return
+            
+        self._device_states[device_name] = False
+        if device_name in self._tasks:
+            self._tasks[device_name].cancel()
+            try:
+                await self._tasks[device_name]
+            except asyncio.CancelledError:
+                pass
+            del self._tasks[device_name]
+        self.logger.info(f"Stopped data collection for device {device_name}")
+    
+    async def start_collection(self) -> None:
+        """Start data collection for all devices."""
+        if self._running:
+            return
+            
+        self._running = True
+        for device_name in self._devices:
+            await self.start_device(device_name)
+        
+        self._processor_task = asyncio.create_task(self._process_data())
+        self.logger.info("Started data collection for all devices")
+    
+    async def stop_collection(self) -> None:
+        """Stop data collection for all devices."""
+        if not self._running:
+            return
+            
+        self._running = False
+        
+        # Detener todos los dispositivos
+        for device_name in list(self._devices.keys()):
+            await self.stop_device(device_name)
+        
+        # Cancelar la tarea de procesamiento
+        if self._processor_task:
+            self._processor_task.cancel()
+            try:
+                await self._processor_task
+            except asyncio.CancelledError:
+                pass
+            self._processor_task = None
+        
+        self.logger.info("Stopped data collection for all devices")
+    
+    def get_device_state(self, device_name: str) -> bool:
+        """Get the current state of a device."""
+        return self._device_states.get(device_name, False)
+    
+    async def _collect_device_data(self, device_name: str, device: Device, config: DeviceConfig) -> None:
+        """Collect data from a single device."""
         try:
-            while True:
+            while self._device_states[device_name]:  # Usar el estado individual del dispositivo
                 start_time = datetime.now()
                 timestamp_key = start_time.strftime("%Y-%m-%d %H:%M")
-
-                device_data = await device.read()
-
-                async with self.data_lock:
-                    buffer_entry = self.data_buffer[timestamp_key]
-                    for key, value in device_data.items():
-                        buffer_entry["data"][key] = (
-                            buffer_entry["data"].get(key, 0.0) + value
-                        )
-                    buffer_entry["count"] += 1
-
+                
+                try:
+                    device_data = await device.read()
+                    
+                    async with self._data_lock:
+                        buffer_entry = self._data_buffer[timestamp_key]
+                        for key, value in device_data.items():
+                            buffer_entry["data"][key] = (
+                                buffer_entry["data"].get(key, 0.0) + value
+                            )
+                        buffer_entry["count"] += 1
+                        
+                except Exception as e:
+                    self.logger.error(f"Error reading from {device_name}: {e}")
+                
                 elapsed = (datetime.now() - start_time).total_seconds()
-                sleep_time = max(0.1, scan_interval - elapsed)
+                sleep_time = max(0.1, config["scan_interval"] - elapsed)
                 await asyncio.sleep(sleep_time)
+                
+        except asyncio.CancelledError:
+            self.logger.info(f"Collection cancelled for {device_name}")
         except Exception as e:
-            self.logger.error(f"Error in data collection for {name}: {e}")
-            raise
+            self.logger.error(f"Unexpected error in collection for {device_name}: {e}")
         finally:
-            self.logger.info(f"Stopped data collection for sensor {name}")
-
-    async def process_and_save_data(
-        self, output_interval: float = 60.0
-    ) -> None:
-        """Process collected data and save each minute."""
-        self.logger.info("Starting data processing task")
+            self._device_states[device_name] = False
+    
+    async def _process_data(self) -> None:
+        """Process and save collected data periodically."""
         try:
-            while True:
-                await asyncio.sleep(output_interval)
-
+            while self._running:
+                await asyncio.sleep(60.0)  # Process every minute
+                
                 now = datetime.now()
-                process_time = now.replace(second=0, microsecond=0)
-                process_time = process_time - timedelta(minutes=1)
+                process_time = now.replace(second=0, microsecond=0) - timedelta(minutes=1)
                 timestamp_key = process_time.strftime("%Y-%m-%d %H:%M")
-
-                async with self.data_lock:
-                    if timestamp_key in self.data_buffer:
-                        buffer_entry = self.data_buffer[timestamp_key]
+                
+                async with self._data_lock:
+                    if timestamp_key in self._data_buffer:
+                        buffer_entry = self._data_buffer[timestamp_key]
                         averages = {
                             k: round(v / buffer_entry["count"], 1)
                             if k != "RainRate"
                             else round(v / buffer_entry["count"], 2)
                             for k, v in buffer_entry["data"].items()
                         }
-                        self.data_to_save.append(
-                            {"timestamp": timestamp_key, **averages}
-                        )
-                        del self.data_buffer[timestamp_key]
-                        # Guardar inmediatamente los datos del minuto
-                        await self._save_batch_data(self.data_to_save)
-                        self.data_to_save.clear()
-
+                        
+                        await self._save_batch_data([{
+                            "timestamp": timestamp_key,
+                            **averages
+                        }])
+                        
+                        del self._data_buffer[timestamp_key]
+                        
+        except asyncio.CancelledError:
+            self.logger.info("Data processor cancelled")
         except Exception as e:
-            self.logger.error(f"Error in data processing: {e}")
-        finally:
-            if self.data_to_save:
-                await self._save_batch_data(self.data_to_save)
-            self.logger.info("Stopped data processing task")
-
+            self.logger.error(f"Error in data processor: {e}")
+    
     @retry(stop=stop_after_attempt(3), wait=wait_fixed(2))
     async def _save_batch_data(self, data: List[Dict[str, Any]]) -> None:
         """Save a batch of data to CSV with retries."""
