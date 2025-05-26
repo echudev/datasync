@@ -16,5 +16,15 @@
       "SolarRadiation"
     ],
     "scan_interval": 10.0
+  },
+  {
+    "name": "mockNox",
+    "connection_type": "mock",
+    "keys": [
+      "NO",
+      "NO2",
+      "NOx"
+    ],
+    "scan_interval": 10.0
   }
 ]

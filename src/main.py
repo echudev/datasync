@@ -6,18 +6,19 @@ DataCollector and Publisher services using a control file.
 """
 from PySide2.QtWidgets import QApplication, QSystemTrayIcon, QMenu, QAction
 from PySide2.QtQml import QQmlApplicationEngine
-from PySide2.QtCore import QUrl, Signal, QObject, Slot, Property
+from PySide2.QtCore import QUrl, Signal, QObject, Slot
 from PySide2.QtWidgets import QStyle
 from qasync import QEventLoop
 import sys
 import os
 import asyncio
 import json
-from typing import List, Dict
+from typing import List
 
-from core.services import DataCollector, WinAQMSPublisher, CSVPublisher
-from core.models import StationConfig, DeviceConfig
-from core.factories.device_factory import DeviceFactory
+from core.publishers import WinAQMSPublisher, CSVPublisher
+from core.devices.device_services import DataCollector
+from core.devices.base_model import DeviceConfig
+from core.devices.device_factory import DeviceFactory
 from core.utils.control import update_control_file, initialize_control_file
 from core.utils.log_manager import LogManager
 from core.utils.path_dir import CONFIG_DIR
@@ -175,7 +176,7 @@ if __name__ == "__main__":
        
         # Cargar configuración de la estación
         with open(CONFIG_DIR / "station.json") as sf:
-            station: StationConfig = json.load(sf)
+            station = json.load(sf)
 
         logger.info(
             f"Station: {station['name']} at {station['location']} "
@@ -197,7 +198,7 @@ if __name__ == "__main__":
         devices = [
             device_factory.create_device(
                 cfg["name"],
-                port=cfg["port"],
+                port=cfg["port"] if "port" in cfg else None,
                 logger=logger
             ) for cfg in devices_config
         ]

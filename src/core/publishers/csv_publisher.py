@@ -23,7 +23,7 @@ from aiohttp import ClientTimeout
 from aiohttp.client_exceptions import ClientError
 from core.utils.control import CONTROL_FILE, update_control_file
 from core.utils.log_manager import LogManager
-from core.models import WeatherDeviceDTO
+from core.devices.vantagepro2.model import WeatherDeviceDTO
 
 
 class CSVPublisher:

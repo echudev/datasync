@@ -5,8 +5,9 @@ This module implements the Factory pattern for creating device instances.
 """
 
 from typing import Dict, Type
-from core.models import Device
-from core.drivers.davis_vantage_pro2 import DavisVantagePro2
+from core.devices.base_model import Device
+from core.devices.vantagepro2.driver import DavisVantagePro2
+from core.devices.mocknox.service import MockNox
 
 class DeviceFactory:
     """Factory class for creating device instances."""
@@ -23,7 +24,8 @@ class DeviceFactory:
     def _initialize_devices(self):
         """Initialize the device registry with available device types."""
         self._devices = {
-            "davisvp2": DavisVantagePro2
+            "davisvp2": DavisVantagePro2,
+            "mockNox": MockNox,
             #  Agregar más dispositivos acá, por ejemplo:
             # "thermo48i": Thermo48i,
             # "Thermo42i": Thermo42i,

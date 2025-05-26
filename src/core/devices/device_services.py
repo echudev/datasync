@@ -12,7 +12,7 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Any, Optional
 import pandas as pd
 from tenacity import retry, stop_after_attempt, wait_fixed
-from core.models import Device, DeviceConfig
+from core.devices.base_model import Device, DeviceConfig
 from core.utils.path_dir import DATA_DIR
 
 class DataCollector:

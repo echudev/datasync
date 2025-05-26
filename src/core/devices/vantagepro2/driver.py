@@ -4,7 +4,7 @@ import serial
 import time
 from typing import Dict
 from array import array
-from core.models import Device
+from core.devices.base_model import Device
 
 class DavisVantagePro2(Device):
     def __init__(self, port: str = "COM4", baudrate: int = 19200, timeout: float = 5, logger=None):

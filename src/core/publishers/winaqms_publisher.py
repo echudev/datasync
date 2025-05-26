@@ -22,7 +22,7 @@ from aiohttp import ClientTimeout
 from aiohttp.client_exceptions import ClientError
 from pathlib import Path
 from core.utils.control import CONTROL_FILE, update_control_file
-from core.models import AirQualityDeviceDTO
+from core.devices.winAQMS.model import AirQualityDeviceDTO
 from core.utils.log_manager import LogManager
 
 
